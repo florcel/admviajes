@@ -16,7 +16,9 @@ var ESTADOS = {
   SUSPENDIDA: 'Suspendida'
 };
 var EDITABLES_ADMIN = ['nombre', 'destino', 'nivel', 'curso', 'fecha_salida', 'fecha_regreso', 'pernocte', 'total_alumnos',
-  'docentes', 'transporte', 'responsable', 'pct_estimados', 'alumnos_calculo', 'cuotas', 'mes_inicio_cobro', 'notas_internas'];
+  'docentes', 'transporte', 'responsable', 'pct_estimados', 'alumnos_calculo', 'cuotas', 'mes_inicio_cobro', 'notas_internas',
+  'variante_activa', 'pdf_escenarios'];
+var LETRAS = ['A', 'B', 'C', 'D', 'E', 'F'];
 var EDITABLES_NIVEL = ['nombre', 'destino', 'curso', 'fecha_salida', 'fecha_regreso', 'pernocte', 'total_alumnos', 'docentes', 'comentario_nivel'];
 var BLOQUEADOS = ['ENVIADA', 'CONFIRMADA', 'SUSPENDIDA'];
 
@@ -75,10 +77,40 @@ function buscarSalida_(id) {
   return s;
 }
 
-function itemsDe_(id) {
-  return leerTabla_('ITEMS')
-    .filter(function (r) { return String(r.id_salida) === String(id); })
-    .sort(function (a, b) { return (Number(a.orden) || 0) - (Number(b.orden) || 0); });
+function ordenar_(a, b) { return (Number(a.orden) || 0) - (Number(b.orden) || 0); }
+
+function itemLimpio_(it) {
+  return {
+    id: it.id, concepto: it.concepto, detalle: it.detalle, tipo: it.tipo === 'POR_ALUMNO' ? 'POR_ALUMNO' : 'FIJO',
+    cantidad: it.cantidad, precio: it.precio, mes_pago: it.mes_pago, pagos: it.pagos || '', mostrar_pdf: it.mostrar_pdf || 'SI'
+  };
+}
+
+/** Variantes de presupuesto de una salida, cada una con sus parámetros y costos. */
+function variantesDe_(s, filasVar, filasItems) {
+  filasVar = (filasVar || leerTabla_('VARIANTES')).filter(function (r) { return String(r.id_salida) === String(s.id); });
+  filasItems = (filasItems || leerTabla_('ITEMS')).filter(function (r) { return String(r.id_salida) === String(s.id); }).sort(ordenar_);
+  if (!filasVar.length) {
+    filasVar = [{ variante: 'A', nombre: 'Opción A', pct_estimados: s.pct_estimados, alumnos_calculo: s.alumnos_calculo, cuotas: s.cuotas, mes_inicio_cobro: s.mes_inicio_cobro }];
+  }
+  return filasVar.map(function (v) {
+    var letra = String(v.variante || 'A');
+    return {
+      variante: letra, nombre: v.nombre || 'Opción ' + letra, pct_estimados: v.pct_estimados, alumnos_calculo: v.alumnos_calculo,
+      cuotas: v.cuotas, mes_inicio_cobro: v.mes_inicio_cobro,
+      items: filasItems.filter(function (it) { return String(it.variante || 'A') === letra; }).map(itemLimpio_)
+    };
+  }).sort(function (a, b) { return a.variante.localeCompare(b.variante); });
+}
+
+function activa_(s, variantes) {
+  var letra = String(s.variante_activa || 'A');
+  return variantes.filter(function (v) { return v.variante === letra; })[0] || variantes[0];
+}
+
+/** Datos de la salida con los parámetros de la variante indicada (lo que usan los cálculos). */
+function combinar_(s, v) {
+  return Object.assign({}, s, { pct_estimados: v.pct_estimados, alumnos_calculo: v.alumnos_calculo, cuotas: v.cuotas, mes_inicio_cobro: v.mes_inicio_cobro });
 }
 
 /* ---------- API para el navegador ---------- */
@@ -103,19 +135,19 @@ function listarSalidas() {
   var u = usuario_();
   var cfg = leerConfig_();
   var C = calc_();
-  var porSalida = {};
-  leerTabla_('ITEMS').forEach(function (it) {
-    (porSalida[it.id_salida] = porSalida[it.id_salida] || []).push(it);
-  });
+  var vars = leerTabla_('VARIANTES'), items = leerTabla_('ITEMS');
   return leerTabla_('SALIDAS')
     .filter(function (s) { return puedeVer_(u, s); })
     .map(function (s) {
-      var pr = C.presupuesto(s, porSalida[s.id] || [], cfg);
+      var variantes = variantesDe_(s, vars, items);
+      var v = activa_(s, variantes);
+      var pr = C.presupuesto(combinar_(s, v), v.items, cfg);
       var mostrarValor = esAdmin_(u) || ['ENVIADA', 'CONFIRMADA', 'CAMBIOS'].indexOf(s.estado) > -1;
       return {
         id: s.id, nombre: s.nombre, destino: s.destino, nivel: s.nivel, curso: s.curso,
         fecha_salida: s.fecha_salida, fecha_regreso: s.fecha_regreso, total_alumnos: s.total_alumnos,
-        estado: s.estado, valor: mostrarValor ? pr.valor : null, cuotas: pr.cuotas, cuota: mostrarValor ? pr.cuota : null
+        estado: s.estado, valor: mostrarValor ? pr.valor : null, cuotas: pr.cuotas, cuota: mostrarValor ? pr.cuota : null,
+        variantes: esAdmin_(u) ? variantes.length : null
       };
     })
     .sort(function (a, b) { return String(a.fecha_salida || '9999').localeCompare(String(b.fecha_salida || '9999')); });
@@ -126,23 +158,26 @@ function obtenerSalida(id) {
   var s = buscarSalida_(id);
   if (!puedeVer_(u, s)) throw new Error('No tenés acceso a esta salida.');
   delete s._fila;
-  var items = itemsDe_(id).map(function (it) { delete it._fila; return it; });
+  var variantes = variantesDe_(s);
   if (esAdmin_(u)) {
+    s.variante_activa = activa_(s, variantes).variante;
     s.historial = leerTabla_('LOG').filter(function (l) { return String(l.id_salida) === String(id); })
       .map(function (l) { return { fecha: l.fecha, usuario: l.usuario, accion: l.accion, detalle: l.detalle }; })
       .reverse().slice(0, 30);
-    return { salida: s, items: items };
+    return { salida: s, variantes: variantes };
   }
-  // El nivel ve el presupuesto como lo ven las familias: sin precios, sin meses de pago, sin notas internas.
-  var cfg = leerConfig_();
-  var pr = calc_().presupuesto(s, items, cfg);
-  delete s.notas_internas; delete s.pct_estimados; delete s.alumnos_calculo;
+  // El nivel ve solo la variante elegida y como la ven las familias: sin precios, sin meses de pago, sin notas internas.
+  var cfg = leerConfig_(), C = calc_();
+  var v = activa_(s, variantes), sm = combinar_(s, v);
+  var pr = C.presupuesto(sm, v.items, cfg);
+  ['notas_internas', 'pct_estimados', 'alumnos_calculo', 'variante_activa'].forEach(function (k) { delete s[k]; });
   var visible = ['ENVIADA', 'CONFIRMADA', 'CAMBIOS'].indexOf(s.estado) > -1;
   return {
     salida: s,
     resumen: visible ? {
       valor: pr.valor, cuotas: pr.cuotas, cuota: pr.cuota, mesInicio: pr.mesInicio, mesFin: pr.mesFin,
-      incluye: items.filter(function (it) { return String(it.mostrar_pdf).toUpperCase() !== 'NO'; }).map(function (it) { return it.concepto; })
+      incluye: v.items.filter(function (it) { return String(it.mostrar_pdf).toUpperCase() !== 'NO' && it.concepto; }).map(function (it) { return it.concepto; }),
+      escenarios: String(s.pdf_escenarios).toUpperCase() === 'SI' ? C.escenarios(sm, v.items, cfg) : null
     } : null
   };
 }
@@ -187,27 +222,80 @@ function guardarSalida(datos) {
   });
 }
 
-/** Guarda datos + costos juntos (pantalla de presupuesto). */
-function guardarPresupuesto(id, datos, items) {
+/**
+ * Guarda el presupuesto completo: todas las variantes con sus parámetros y costos, cuál se envía y si el PDF lleva la tabla de escenarios.
+ * datos = { variante_activa: 'A', pdf_escenarios: 'SI'|'NO', variantes: [{ variante, nombre, pct_estimados, alumnos_calculo, cuotas, mes_inicio_cobro, items: [...] }] }
+ */
+function guardarPresupuesto(id, datos) {
   var u = usuario_();
   exigirAdmin_(u);
   datos = datos || {};
-  datos.id = id;
-  guardarSalida(datos);
+  var C = calc_();
+  var variantes = (datos.variantes || []).slice(0, LETRAS.length);
+  if (!variantes.length) throw new Error('El presupuesto tiene que tener al menos una variante.');
+  var letras = variantes.map(function (v) { return String(v.variante); });
+  letras.forEach(function (l, i) {
+    if (LETRAS.indexOf(l) === -1 || letras.indexOf(l) !== i) throw new Error('Variante no válida: ' + l + '.');
+  });
+  var activa = letras.indexOf(String(datos.variante_activa)) > -1 ? String(datos.variante_activa) : letras[0];
+  var va = variantes[letras.indexOf(activa)];
+  guardarSalida({
+    id: id, variante_activa: activa, pdf_escenarios: String(datos.pdf_escenarios).toUpperCase() === 'SI' ? 'SI' : 'NO',
+    pct_estimados: va.pct_estimados, alumnos_calculo: va.alumnos_calculo, cuotas: va.cuotas, mes_inicio_cobro: va.mes_inicio_cobro
+  });
   return conBloqueo_(function () {
-    var limpios = (items || []).map(function (it, i) {
-      var tipo = it.tipo === 'POR_ALUMNO' ? 'POR_ALUMNO' : 'FIJO';
-      return {
-        id: it.id || Utilities.getUuid().slice(0, 8), id_salida: id, orden: i + 1,
-        concepto: String(it.concepto || '').trim(), detalle: String(it.detalle || '').trim(), tipo: tipo,
-        cantidad: tipo === 'POR_ALUMNO' ? 1 : numero_(it.cantidad), precio: numero_(it.precio),
-        mes_pago: limpiar_('mes_pago', it.mes_pago), mostrar_pdf: String(it.mostrar_pdf).toUpperCase() === 'NO' ? 'NO' : 'SI'
-      };
-    }).filter(function (it) { return it.concepto || it.precio; });
-    reemplazarFilas_('ITEMS', function (r) { return String(r.id_salida) === String(id); }, limpios);
-    registrar_(u.email, id, 'Guardó el presupuesto', limpios.length + ' costo(s)');
+    var filasVar = [], filasItems = [];
+    variantes.forEach(function (v) {
+      var letra = String(v.variante);
+      filasVar.push({
+        id_salida: id, variante: letra, nombre: String(v.nombre || 'Opción ' + letra).trim().slice(0, 80),
+        pct_estimados: limpiar_('pct_estimados', v.pct_estimados), alumnos_calculo: limpiar_('alumnos_calculo', v.alumnos_calculo),
+        cuotas: limpiar_('cuotas', v.cuotas) || 1, mes_inicio_cobro: limpiar_('mes_inicio_cobro', v.mes_inicio_cobro)
+      });
+      (v.items || []).forEach(function (it, i) {
+        var tipo = it.tipo === 'POR_ALUMNO' ? 'POR_ALUMNO' : 'FIJO';
+        var partes = C.partes(it);
+        var pagos = C.textoPartes(partes);
+        if (!it.concepto && !numero_(it.precio)) return;
+        filasItems.push({
+          id: it.id || Utilities.getUuid().slice(0, 8), id_salida: id, orden: i + 1, variante: letra,
+          concepto: String(it.concepto || '').trim(), detalle: String(it.detalle || '').trim(), tipo: tipo,
+          cantidad: tipo === 'POR_ALUMNO' ? 1 : numero_(it.cantidad), precio: numero_(it.precio),
+          mes_pago: partes.length ? partes[0].mes : '', pagos: partes.length > 1 || (partes[0] && partes[0].pct !== 100) ? pagos : '',
+          mostrar_pdf: String(it.mostrar_pdf).toUpperCase() === 'NO' ? 'NO' : 'SI'
+        });
+      });
+    });
+    reemplazarFilas_('VARIANTES', function (r) { return String(r.id_salida) === String(id); }, filasVar);
+    reemplazarFilas_('ITEMS', function (r) { return String(r.id_salida) === String(id); }, filasItems);
+    registrar_(u.email, id, 'Guardó el presupuesto', variantes.length + ' variante(s) · se envía la ' + activa + ' · ' + filasItems.length + ' costo(s)');
     return obtenerSalida(id);
   });
+}
+
+/** Busca presupuestos para copiar costos: historial 2022–2026 y salidas del año. */
+function buscarPresupuestos(texto, excluirId) {
+  var u = usuario_();
+  exigirAdmin_(u);
+  var palabras = String(texto || '').toLowerCase().split(/\s+/).filter(Boolean);
+  function coincide(t) { t = t.toLowerCase(); return palabras.every(function (p) { return t.indexOf(p) > -1; }); }
+  var grupos = {};
+  leerTabla_('HISTORIAL').forEach(function (r) {
+    var g = grupos[r.origen] = grupos[r.origen] || { origen: r.origen, anio: r.anio, fecha: r.fecha, total_alumnos: r.total_alumnos, items: [] };
+    g.items.push({ concepto: r.concepto, tipo: r.tipo, cantidad: r.cantidad, precio: r.precio });
+  });
+  var hist = Object.keys(grupos).map(function (k) { return grupos[k]; })
+    .filter(function (g) { return !palabras.length || coincide(g.origen + ' ' + g.items.map(function (i) { return i.concepto; }).join(' ')); })
+    .sort(function (a, b) { return String(b.fecha || b.anio).localeCompare(String(a.fecha || a.anio)); })
+    .slice(0, 15);
+  var vars = leerTabla_('VARIANTES'), items = leerTabla_('ITEMS');
+  var actuales = leerTabla_('SALIDAS').filter(function (s) {
+    return String(s.id) !== String(excluirId) && (!palabras.length || coincide([s.id, s.nombre, s.destino, s.curso].join(' ')));
+  }).slice(0, 10).map(function (s) {
+    var v = activa_(s, variantesDe_(s, vars, items));
+    return { origen: s.id + ' ' + s.nombre, anio: leerConfig_().anio, fecha: s.fecha_salida, total_alumnos: s.total_alumnos, items: v.items };
+  });
+  return { historial: hist, actuales: actuales };
 }
 
 /** Genera el PDF para las familias sin cambiar el estado. */
@@ -215,7 +303,8 @@ function generarPdf(id) {
   var u = usuario_();
   exigirAdmin_(u);
   var s = buscarSalida_(id);
-  var url = crearPdf_(s, itemsDe_(id), leerConfig_());
+  var v = activa_(s, variantesDe_(s));
+  var url = crearPdf_(combinar_(s, v), v.items, leerConfig_());
   actualizarFila_('SALIDAS', s._fila, { pdf_url: url, pdf_fecha: new Date() });
   registrar_(u.email, id, 'Generó el PDF', url);
   return url;
@@ -228,17 +317,18 @@ function enviarAlNivel(id) {
   return conBloqueo_(function () {
     var s = buscarSalida_(id);
     if (BLOQUEADOS.indexOf(s.estado) > -1) throw new Error('La salida ya está ' + ESTADOS[s.estado].toLowerCase() + '.');
-    var items = itemsDe_(id);
+    var v = activa_(s, variantesDe_(s));
+    var sm = combinar_(s, v), items = v.items;
     var cfg = leerConfig_();
-    var errores = calc_().controles(s, items, cfg, leerTabla_('HONORARIOS')).filter(function (c) { return c.nivel === 'error'; });
-    if (errores.length) throw new Error('Antes de enviar: ' + errores.map(function (e) { return e.detalle; }).join(' '));
-    var url = crearPdf_(s, items, cfg);
+    var errores = calc_().controles(sm, items, cfg, leerTabla_('HONORARIOS')).filter(function (c) { return c.nivel === 'error'; });
+    if (errores.length) throw new Error('Antes de enviar (variante ' + v.variante + '): ' + errores.map(function (e) { return e.detalle; }).join(' '));
+    var url = crearPdf_(sm, items, cfg);
     actualizarFila_('SALIDAS', s._fila, {
       estado: 'ENVIADA', pdf_url: url, pdf_fecha: new Date(), actualizado_fecha: new Date(),
       comentario_nivel: '', respondido_por: '', respondido_fecha: ''
     });
     registrar_(u.email, id, 'Envió el presupuesto al nivel', url);
-    var pr = calc_().presupuesto(s, items, cfg);
+    var pr = calc_().presupuesto(sm, items, cfg);
     avisarNivel_(s, 'Presupuesto para confirmar: ' + s.nombre,
       'Administración envió el presupuesto de «' + s.nombre + '».\n\n' +
       'Valor por alumno: ' + calc_().pesos(pr.valor) + ' en ' + pr.cuotas + ' cuota(s) de ' + calc_().pesos(pr.cuota) + '.\n' +
@@ -323,6 +413,8 @@ function limpiar_(col, v) {
     var m = /^(\d{4})-(\d{1,2})/.exec(String(v || ''));
     return m ? m[1] + '-' + ('0' + m[2]).slice(-2) : '';
   }
+  if (col === 'pdf_escenarios') return String(v).toUpperCase() === 'SI' ? 'SI' : 'NO';
+  if (col === 'variante_activa') return LETRAS.indexOf(String(v)) > -1 ? String(v) : 'A';
   if (col === 'pernocte') return String(v).toUpperCase() === 'SI' ? 'SI' : 'NO';
   if (col === 'nivel' && LISTAS.nivel.indexOf(v) === -1) return '';
   return typeof v === 'string' ? v.trim() : v;

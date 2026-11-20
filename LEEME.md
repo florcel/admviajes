@@ -10,6 +10,11 @@ App web para el Colegio Alemán Córdoba. Funciona sobre una planilla de Google 
   - honorarios docentes tomados de la tabla;
   - porcentaje de alumnos que viajan;
   - cuotas y valor por alumno, que se recalculan en vivo.
+- **Variantes para comparar:** por ejemplo, «con Beggia» y «con Virgen del Milagro», o «Cataratas» y «Cataratas con Brasil». Se ven lado a lado y al nivel le llega solo la que marques «Se envía».
+- **Pagos en partes:** cada costo puede pagarse en seña y saldo (por ejemplo, 20% en julio y 80% en septiembre) o en varios pagos iguales. El cuadro de cobros y pagos los toma mes a mes.
+- **Tabla de escenarios:** el costo por alumno según cuántos viajen, como las columnas de la planilla. Si la tildás, sale también en el PDF y en la vista del nivel.
+- **Copiar de…:** trae costos de otra salida del año o del **historial 2022–2026**: 173 presupuestos y 558 costos tomados de la planilla «VIAJES Y PASEOS AÑO 2026 - PDF para enviar».
+- **Precio con cuenta:** en Precio se puede escribir `4140000+96800*2`. La app hace la cuenta y deja la cuenta anotada en Detalle.
 - **Control interno**, que solo ve administración:
   - controles de datos faltantes, costos sin mes de pago, meses en negativo y cuotas posteriores al viaje;
   - cuadro de cobros y pagos mes a mes.
@@ -17,7 +22,7 @@ App web para el Colegio Alemán Córdoba. Funciona sobre una planilla de Google 
 - **Confirmación del nivel:** el nivel recibe un mail, ve el presupuesto y lo confirma o pide cambios. Administración recibe la respuesta por mail.
 - **Historial** de cada salida: quién hizo qué y cuándo.
 
-**Probarla antes de instalar:** abrí `demo/demo.html` en el navegador. Abajo a la izquierda se elige con qué usuario verla (Administración, Nivel Primario o Nivel Secundario). Los datos de la demo se borran al recargar la página.
+**Probarla antes de instalar:** abrí `demo/demo.html` en el navegador. También está publicada en Vercel: el `vercel.json` de esta carpeta hace que la dirección principal abra la demo. Abajo a la izquierda se elige con qué usuario verla (Administración, Nivel Primario o Nivel Secundario). Los datos de la demo se borran al recargar la página.
 
 ---
 
@@ -35,7 +40,7 @@ Conviene hacerla con una **cuenta institucional** (por ejemplo, la de administra
 
 En la carpeta `apps-script/` están todos los archivos. En el editor:
 
-- **Archivos de código** (botón **+ › Secuencia de comandos**). Creá `Codigo`, `Datos`, `Instalar` y `Pdf`, y pegá el contenido del archivo `.gs` con el mismo nombre. Borrá el `Código.gs` que viene por defecto o reemplazá su contenido.
+- **Archivos de código** (botón **+ › Secuencia de comandos**). Creá `Codigo`, `Datos`, `Instalar`, `Pdf` y `HistorialDatos`, y pegá el contenido del archivo `.gs` con el mismo nombre. Borrá el `Código.gs` que viene por defecto o reemplazá su contenido.
 - **Archivos HTML** (botón **+ › HTML**). Creá `index`, `estilos`, `app`, `calc` y `pdf`, y pegá el contenido de cada `.html`.
   Los nombres tienen que ser exactamente esos, sin `.html`.
 - **`appsscript.json`:** reemplazá su contenido por el del archivo del mismo nombre.
@@ -49,8 +54,8 @@ En la carpeta `apps-script/` están todos los archivos. En el editor:
 1. Arriba, en el menú de funciones, elegí **`instalar`** y tocá **▶ Ejecutar**.
 2. Google pide permisos para la planilla, Drive y mail. Aceptá con la cuenta institucional.
    Si aparece «Google no verificó esta app», tocá **Configuración avanzada › Ir a (nombre del proyecto)**. Es tu propio script.
-3. Se crean las hojas `SALIDAS`, `ITEMS`, `USUARIOS`, `HONORARIOS`, `CONFIG` y `LOG`, y la carpeta de Drive para los PDF.
-4. Opcional: ejecutá **`cargarEjemplo`** para tener una salida de prueba (Villa General Belgrano, con los números de 2026). Después la podés borrar de `SALIDAS` y de `ITEMS`.
+3. Se crean las hojas `SALIDAS`, `VARIANTES`, `ITEMS`, `HISTORIAL`, `USUARIOS`, `HONORARIOS`, `CONFIG` y `LOG`, y la carpeta de Drive para los PDF. La hoja `HISTORIAL` se llena sola con los presupuestos de 2022 a 2026.
+4. Opcional: ejecutá **`cargarEjemplo`** para tener una salida de prueba: Villa General Belgrano, con los números y el plan de pagos de 2026. Después la podés borrar de `SALIDAS`, `VARIANTES` y `ITEMS`.
 
 ### 4. Configurar (en la planilla)
 
@@ -113,12 +118,17 @@ En la carpeta `apps-script/` están todos los archivos. En el editor:
 **Recorrido típico de administración**
 
 1. **+ Nueva salida.**
-2. Pestaña **Presupuesto**: cargar los costos con el mes en que se pagan, el % que viaja, las cuotas y el primer cobro.
+2. Pestaña **Presupuesto**:
+   - cargar los costos (o traerlos con **Copiar de…**) con el mes en que se pagan; con **Dividir** se arma la seña y el saldo;
+   - completar el % que viaja, las cuotas y el primer cobro;
+   - si hay alternativas, crear una **variante para comparar** y marcar cuál **se envía**.
 3. **Guardar presupuesto.**
 4. Pestaña **Control interno**: revisar los controles en verde o naranja y el cuadro de cobros y pagos. Si algún mes queda en negativo, probar otro primer cobro u otra cantidad de cuotas.
 5. **Enviar al nivel.**
 
-**Qué ve cada uno en el PDF y en la vista del nivel:** los conceptos tildados en la columna PDF, el valor por alumno y las cuotas. No aparecen los precios de cada concepto, los meses de pago ni las notas internas.
+**Qué ve cada uno en el PDF y en la vista del nivel:** solo la variante que se envía. Aparecen los conceptos tildados en la columna PDF, el valor por alumno y las cuotas, y la tabla de escenarios si está tildada. No aparecen los precios de cada concepto, los meses de pago, las otras variantes ni las notas internas.
+
+**Sobre el historial:** los precios del historial son de su año. Cuando copiás costos de un presupuesto viejo, la app avisa que hay que actualizarlos. Hay presupuestos viejos que no seguían la plantilla y no se pudieron leer, pero siguen en la planilla original.
 
 ---
 

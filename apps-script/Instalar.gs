@@ -10,9 +10,12 @@ var ESQUEMA = {
     'id', 'nombre', 'destino', 'nivel', 'curso', 'fecha_salida', 'fecha_regreso', 'pernocte',
     'total_alumnos', 'docentes', 'transporte', 'responsable', 'pct_estimados', 'alumnos_calculo',
     'cuotas', 'mes_inicio_cobro', 'estado', 'comentario_nivel', 'respondido_por', 'respondido_fecha',
-    'pdf_url', 'pdf_fecha', 'creado_por', 'creado_fecha', 'actualizado_fecha', 'notas_internas'
+    'pdf_url', 'pdf_fecha', 'creado_por', 'creado_fecha', 'actualizado_fecha', 'notas_internas',
+    'variante_activa', 'pdf_escenarios'
   ],
-  ITEMS: ['id', 'id_salida', 'orden', 'concepto', 'detalle', 'tipo', 'cantidad', 'precio', 'mes_pago', 'mostrar_pdf'],
+  VARIANTES: ['id_salida', 'variante', 'nombre', 'pct_estimados', 'alumnos_calculo', 'cuotas', 'mes_inicio_cobro'],
+  ITEMS: ['id', 'id_salida', 'orden', 'concepto', 'detalle', 'tipo', 'cantidad', 'precio', 'mes_pago', 'mostrar_pdf', 'variante', 'pagos'],
+  HISTORIAL: ['origen', 'anio', 'fecha', 'total_alumnos', 'concepto', 'tipo', 'cantidad', 'precio'],
   USUARIOS: ['email', 'nombre', 'rol', 'nivel', 'activo'],
   HONORARIOS: ['dias', 'honorario_por_docente'],
   CONFIG: ['clave', 'valor', 'descripcion'],
@@ -71,12 +74,15 @@ function instalar() {
 
   // Columnas de texto: evitar que Sheets convierta «2027-07» o «V27-01» en fechas o números.
   formatoTexto_(ss.getSheetByName('SALIDAS'), ['id', 'mes_inicio_cobro', 'responsable']);
-  formatoTexto_(ss.getSheetByName('ITEMS'), ['id', 'id_salida', 'mes_pago']);
+  formatoTexto_(ss.getSheetByName('ITEMS'), ['id', 'id_salida', 'mes_pago', 'variante', 'pagos']);
+  formatoTexto_(ss.getSheetByName('VARIANTES'), ['id_salida', 'variante', 'mes_inicio_cobro']);
+  formatoTexto_(ss.getSheetByName('HISTORIAL'), ['origen', 'fecha']);
   formatoFecha_(ss.getSheetByName('SALIDAS'), ['fecha_salida', 'fecha_regreso']);
 
   validacion_(ss.getSheetByName('SALIDAS'), 'nivel', LISTAS.nivel);
   validacion_(ss.getSheetByName('SALIDAS'), 'pernocte', LISTAS.siNo);
   validacion_(ss.getSheetByName('SALIDAS'), 'estado', LISTAS.estado);
+  validacion_(ss.getSheetByName('SALIDAS'), 'pdf_escenarios', LISTAS.siNo);
   validacion_(ss.getSheetByName('ITEMS'), 'tipo', LISTAS.tipo);
   validacion_(ss.getSheetByName('ITEMS'), 'mostrar_pdf', LISTAS.siNo);
   validacion_(ss.getSheetByName('USUARIOS'), 'rol', LISTAS.rol);
@@ -100,6 +106,8 @@ function instalar() {
     var carpeta = DriveApp.createFolder('Viajes y Salidas ' + leerConfig_().anio + ' — PDFs');
     escribirConfig_('carpeta_pdf_id', carpeta.getId());
   }
+
+  if (ss.getSheetByName('HISTORIAL').getLastRow() < 2) cargarHistorial();
 
   var hoja1 = ss.getSheetByName('Hoja 1') || ss.getSheetByName('Sheet1');
   if (hoja1 && hoja1.getLastRow() === 0 && ss.getSheets().length > 1) ss.deleteSheet(hoja1);
@@ -145,24 +153,34 @@ function cargarEjemplo() {
     id: id, nombre: 'Villa General Belgrano (ejemplo)', destino: 'Villa General Belgrano', nivel: 'Primario',
     curso: '4° grado', fecha_salida: (cfg.anio) + '-11-26', fecha_regreso: (cfg.anio) + '-11-27', pernocte: 'SI',
     total_alumnos: 66, docentes: 7, transporte: 'Beggia Turismo', responsable: '', pct_estimados: 0.8,
-    alumnos_calculo: '', cuotas: 4, mes_inicio_cobro: cfg.anio + '-07', estado: 'BORRADOR',
+    alumnos_calculo: '', cuotas: 4, mes_inicio_cobro: cfg.anio + '-07', estado: 'BORRADOR', variante_activa: 'A', pdf_escenarios: 'NO',
     creado_por: Session.getEffectiveUser().getEmail(), creado_fecha: ahora, actualizado_fecha: ahora,
     notas_internas: 'Datos del viaje V26-18 de 2026, cargados como ejemplo.'
   });
+  agregarFila_('VARIANTES', { id_salida: id, variante: 'A', nombre: 'Con Beggia Turismo', pct_estimados: 0.8, alumnos_calculo: '', cuotas: 4, mes_inicio_cobro: cfg.anio + '-07' });
   var y = cfg.anio;
+  // Plan de pagos como en la planilla 2026: seña del 20% en julio y saldo en septiembre; transporte en 4 partes.
   var items = [
-    ['Docentes acompañantes', '7 docentes · 2 días', 'FIJO', 7, 223683, y + '-11', 'SI'],
-    ['Transporte', '2 coches · Beggia Turismo', 'FIJO', 1, 4333600, y + '-07', 'SI'],
-    ['Hotel docentes', '', 'FIJO', 7, 96800, y + '-10', 'NO'],
-    ['Almuerzo Quaras choferes y docentes', '', 'FIJO', 9, 26257, y + '-10', 'NO'],
-    ['Guía city tour', '', 'FIJO', 1, 300000, y + '-09', 'SI'],
-    ['Parque Quaras con almuerzo', '', 'POR_ALUMNO', 1, 66066, y + '-10', 'SI'],
-    ['Hotel (alojamiento y comidas)', '', 'POR_ALUMNO', 1, 96800, y + '-10', 'SI']
+    ['Docentes acompañantes', '7 docentes · 2 días', 'FIJO', 7, 223683, '', y + '-11:100', 'SI'],
+    ['Transporte', '2 coches · Beggia Turismo (incluye hotel de choferes)', 'FIJO', 1, 4333600, '', y + '-07:25;' + y + '-08:25;' + y + '-09:25;' + y + '-10:25', 'SI'],
+    ['Hotel docentes', '', 'FIJO', 7, 96800, '', y + '-07:20;' + y + '-09:80', 'NO'],
+    ['Almuerzo Quaras choferes y docentes', '', 'FIJO', 9, 26257, '', y + '-07:20;' + y + '-09:80', 'NO'],
+    ['Guía city tour', '', 'FIJO', 1, 300000, '', y + '-09:100', 'SI'],
+    ['Parque Quaras con almuerzo', '', 'POR_ALUMNO', 1, 66066, '', y + '-07:20;' + y + '-09:80', 'SI'],
+    ['Hotel (alojamiento y comidas)', '', 'POR_ALUMNO', 1, 96800, '', y + '-07:20;' + y + '-09:80', 'SI']
   ];
   items.forEach(function (it, i) {
     agregarFila_('ITEMS', {
       id: Utilities.getUuid().slice(0, 8), id_salida: id, orden: i + 1, concepto: it[0], detalle: it[1],
-      tipo: it[2], cantidad: it[3], precio: it[4], mes_pago: it[5], mostrar_pdf: it[6]
+      tipo: it[2], cantidad: it[3], precio: it[4], mes_pago: it[6].slice(0, 7), mostrar_pdf: it[7], variante: 'A', pagos: it[6]
     });
   });
+}
+
+/** Carga el historial de presupuestos 2022–2026 (archivo HistorialDatos.gs) en la hoja HISTORIAL. */
+function cargarHistorial() {
+  if (typeof HISTORIAL_INICIAL === 'undefined' || !HISTORIAL_INICIAL.length) return;
+  var sh = hoja_('HISTORIAL');
+  if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, ESQUEMA.HISTORIAL.length).clearContent();
+  sh.getRange(2, 1, HISTORIAL_INICIAL.length, ESQUEMA.HISTORIAL.length).setValues(HISTORIAL_INICIAL);
 }

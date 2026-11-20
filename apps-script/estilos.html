@@ -102,12 +102,30 @@
   .items input, .items select { min-height: 38px; padding: 7px 9px; font-size: 14px; }
   .items td { padding: 8px 6px; }
   .items td:first-child { padding-left: 16px; }
-  .items .w-con { min-width: 220px; } .items .w-det { min-width: 160px; } .items .w-num { width: 130px; } .items .w-cant { width: 80px; } .items .w-mes { min-width: 160px; } .items .w-tipo { min-width: 125px; }
+  .items .w-con { min-width: 180px; } .items .w-det { min-width: 120px; } .items .w-num { width: 115px; } .items .w-cant { width: 64px; } .items .w-mes { width: 150px; } .items .w-tipo { width: 118px; }
+  .items th { padding: 12px 6px; } .items th:first-child { padding-left: 16px; }
+  .escen th { text-transform: none; letter-spacing: 0; font-size: 13px; }
 
   .aviso { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #16181D; color: #fff; padding: 12px 18px; border-radius: 10px; font-size: 14px; max-width: min(560px, 92vw); box-shadow: 0 6px 24px rgba(0,0,0,.2); z-index: 10; }
   .aviso.error { background: var(--error); }
   .historial li { padding: 8px 0; border-top: 1px solid var(--linea); list-style: none; font-size: 14px; }
   .historial { margin: 0; padding: 0; }
+
+  .variantes { gap: 8px; }
+  .var-btn { min-height: 40px; padding: 8px 12px; border-radius: 999px; border: 1px solid #CDD2DA; background: #fff; color: var(--texto2); font-weight: 500; font-size: 14px; cursor: pointer; }
+  .var-btn b { color: var(--tinta); }
+  .var-btn.sel { border-color: var(--acento); background: #E8EEF7; color: var(--acento-osc); box-shadow: inset 0 0 0 1px var(--acento); }
+  .var-tag { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 999px; background: var(--ok-fondo); color: var(--ok); }
+  .linkbtn { background: none; border: 0; padding: 0; font: inherit; font-weight: 700; color: var(--acento); cursor: pointer; text-align: right; }
+  .comparar td, .comparar th { white-space: nowrap; }
+  tr.plan td { background: #F7F9FC; border-top: 0; }
+  .plan-caja { padding: 6px 4px 10px; }
+  .plan-caja select, .plan-caja input { min-height: 38px; padding: 6px 9px; font-size: 14px; }
+  .plan-txt { white-space: nowrap; color: var(--texto2); }
+  .copiar-grupo { border: 1px solid var(--borde); border-radius: 10px; background: #fff; padding: 10px 14px; }
+  .copiar-grupo summary { cursor: pointer; padding: 4px 0; }
+  .copiar-grupo td { padding: 6px 8px; }
+  .copiar-grupo td:first-child { padding-left: 0; }
 
   @media (max-width: 640px) {
     .contenedor { padding: 20px 14px 48px; }

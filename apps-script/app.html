@@ -2,7 +2,7 @@
 /* ================== Estado y utilidades ================== */
 var S = {
   ini: null, lista: [], filtroNivel: '', filtroEstado: '', buscar: '',
-  vista: 'lista', id: null, salida: null, items: [], resumen: null, tab: 'datos', sucio: false
+  vista: 'lista', id: null, salida: null, variantes: [], ver: 'A', abierto: null, copiar: null, resumen: null, tab: 'datos', sucio: false
 };
 
 function $(sel) { return document.querySelector(sel); }
@@ -141,7 +141,13 @@ function abrir(id, tab) {
 }
 
 function cargarFicha(r) {
-  S.salida = r.salida; S.items = (r.items || []).map(function (x) { return Object.assign({}, x); }); S.resumen = r.resumen || null; S.sucio = false;
+  S.salida = r.salida; S.resumen = r.resumen || null; S.sucio = false; S.abierto = null; S.copiar = null;
+  S.variantes = JSON.parse(JSON.stringify(r.variantes || []));
+  if (S.salida && !S.salida.pdf_escenarios) S.salida.pdf_escenarios = 'NO';
+  if (S.variantes.length) {
+    if (!S.salida.variante_activa || !S.variantes.some(function (v) { return v.variante === S.salida.variante_activa; })) S.salida.variante_activa = S.variantes[0].variante;
+    S.ver = S.salida.variante_activa;
+  }
   if (!esAdmin()) S.tab = 'nivel';
   pintarFicha();
 }
@@ -187,7 +193,7 @@ function pintarFicha() {
 function pintarPanel() {
   var p = $('#panel');
   if (S.tab === 'datos') p.innerHTML = htmlDatos(S.salida, false);
-  else if (S.tab === 'presupuesto') { p.innerHTML = htmlPresupuesto(); pintarItems(); actualizarResumen(); }
+  else if (S.tab === 'presupuesto') { p.innerHTML = htmlPresupuesto(); pintarItems(); actualizarResumen(); pintarCopiar(); }
   else if (S.tab === 'control') { p.innerHTML = htmlControl(); actualizarControl(); }
   else if (S.tab === 'historial') p.innerHTML = htmlHistorial();
   else if (S.tab === 'nivel') p.innerHTML = htmlNivel();
@@ -234,103 +240,245 @@ function leerFormDatos() {
   return d;
 }
 
-/* ---------- Presupuesto ---------- */
+/* ---------- Presupuesto: variantes ---------- */
+function V() { return S.variantes.filter(function (v) { return v.variante === S.ver; })[0] || S.variantes[0]; }
+function SV(v) {
+  v = v || V();
+  return Object.assign({}, S.salida, { pct_estimados: v.pct_estimados, alumnos_calculo: v.alumnos_calculo, cuotas: v.cuotas, mes_inicio_cobro: v.mes_inicio_cobro });
+}
+function marcarSucio() { S.sucio = true; var m = $('#sucio'); if (m) m.hidden = false; }
+
+function htmlVariantes() {
+  var dis = bloqueada();
+  var h = '<div class="variantes fila" role="group" aria-label="Variantes del presupuesto">';
+  S.variantes.forEach(function (v) {
+    var sel = v.variante === S.ver, act = v.variante === S.salida.variante_activa;
+    h += '<button class="var-btn' + (sel ? ' sel' : '') + '" data-accion="verVariante" data-v="' + v.variante + '" aria-pressed="' + sel + '">' +
+      '<b>' + v.variante + '</b> ' + esc(v.nombre) + (act ? ' <span class="var-tag">Se envía</span>' : '') + '</button>';
+  });
+  if (!dis && S.variantes.length < 6) h += '<button class="btn btn-icono" data-accion="nuevaVariante" title="Copia la variante que estás viendo">+ Variante para comparar</button>';
+  h += '</div>';
+  var v = V();
+  h += '<div class="fila" style="gap:10px">' +
+    '<label class="campo" style="flex-direction:row;align-items:center;gap:8px;font-weight:600">Nombre de la variante ' + v.variante +
+    '<input type="text" data-vnombre value="' + esc(v.nombre) + '" style="width:260px"' + (dis ? ' disabled' : '') + '></label>';
+  if (!dis && v.variante !== S.salida.variante_activa) h += '<button class="btn btn-icono" data-accion="usarVariante">Usar esta para enviar al nivel</button>';
+  if (!dis && S.variantes.length > 1) h += '<button class="btn btn-icono btn-peligro" data-accion="borrarVariante">Borrar variante</button>';
+  h += '</div>';
+  return h;
+}
+
 function htmlPresupuesto() {
-  var s = S.salida, dis = bloqueada() ? ' disabled' : '';
-  var pct = s.pct_estimados === '' || s.pct_estimados === null || s.pct_estimados === undefined ? '' : Math.round(Number(s.pct_estimados) * 100);
+  var dis = bloqueada() ? ' disabled' : '';
+  var v = V();
+  var pct = v.pct_estimados === '' || v.pct_estimados === null || v.pct_estimados === undefined ? '' : Math.round(Number(v.pct_estimados) * 100);
   var h = '<div class="col" style="gap:20px">';
+  h += '<section class="tarjeta tarjeta-cuerpo col" style="gap:14px">' + htmlVariantes() + '<div id="comparacion"></div></section>';
   h += '<section class="tarjeta"><div class="tarjeta-cuerpo dos-col" style="align-items:stretch">';
   h += '<div class="principal col" style="gap:12px;flex-basis:420px"><h2>Valor para las familias</h2><div class="grilla" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">' +
     '<label class="campo">% que viaja<span class="ayuda">Vacío = ' + Math.round(S.ini.config.pct_estimados * 100) + '%</span><input type="number" data-param="pct_estimados" min="1" max="100" value="' + esc(pct) + '"' + dis + '></label>' +
-    '<label class="campo">Alumnos fijos<span class="ayuda">Reemplaza al %</span><input type="number" data-param="alumnos_calculo" min="0" value="' + esc(s.alumnos_calculo) + '"' + dis + '></label>' +
-    '<label class="campo">Cuotas<span class="ayuda">Cantidad</span><input type="number" data-param="cuotas" min="1" max="12" value="' + esc(s.cuotas || 1) + '"' + dis + '></label>' +
-    '<label class="campo">Primer cobro<span class="ayuda">Mes de la 1ª cuota</span><select data-param="mes_inicio_cobro"' + dis + '>' + opcionesMes(s.mes_inicio_cobro) + '</select></label></div></div>';
+    '<label class="campo">Alumnos fijos<span class="ayuda">Reemplaza al %</span><input type="number" data-param="alumnos_calculo" min="0" value="' + esc(v.alumnos_calculo) + '"' + dis + '></label>' +
+    '<label class="campo">Cuotas<span class="ayuda">Cantidad</span><input type="number" data-param="cuotas" min="1" max="12" value="' + esc(v.cuotas || 1) + '"' + dis + '></label>' +
+    '<label class="campo">Primer cobro<span class="ayuda">Mes de la 1ª cuota</span><select data-param="mes_inicio_cobro"' + dis + '>' + opcionesMes(v.mes_inicio_cobro) + '</select></label></div></div>';
   h += '<div class="lateral" id="resumen" style="background:#FFF6CC;border:1px solid #EED77A;border-radius:10px;padding:16px 18px;flex-basis:280px"></div>';
   h += '</div></section>';
+  h += '<section class="tarjeta"><div class="tarjeta-cab"><h2>Costo por alumno según cuántos viajan</h2>' +
+    '<label class="fila chico" style="gap:8px;font-weight:600"><input type="checkbox" data-salida="pdf_escenarios"' + (String(S.salida.pdf_escenarios).toUpperCase() === 'SI' ? ' checked' : '') + dis + '> Mostrar esta tabla en el PDF y al nivel</label></div>' +
+    '<div class="tabla-caja" id="escenarios"></div></section>';
   h += '<section class="tarjeta">';
-  h += '<div class="tarjeta-cab"><h2>Costos</h2><div class="fila">' +
+  h += '<div class="tarjeta-cab"><h2>Costos · variante ' + v.variante + '</h2><div class="fila">' +
     '<button class="btn btn-icono" data-accion="addFijo"' + dis + '>+ Costo fijo</button>' +
     '<button class="btn btn-icono" data-accion="addAlumno"' + dis + '>+ Costo por alumno</button>' +
-    '<button class="btn btn-icono" data-accion="addHonorarios"' + dis + '>+ Honorarios docentes</button></div></div>';
+    '<button class="btn btn-icono" data-accion="addHonorarios"' + dis + '>+ Honorarios docentes</button>' +
+    '<button class="btn btn-icono" data-accion="copiarAbrir"' + dis + '>Copiar de…</button></div></div>';
+  h += '<div id="copiar"></div>';
   h += '<div class="tabla-caja"><table class="items"><thead><tr><th>Concepto</th><th>Detalle</th><th>Tipo</th><th class="num">Cant.</th><th class="num">Precio</th><th class="num">Total</th><th>Se paga en</th><th title="Aparece en el PDF para las familias">PDF</th><th></th></tr></thead><tbody id="filasItems"></tbody></table></div>';
-  h += '<div class="tarjeta-cuerpo fila entre" style="border-top:1px solid var(--linea)"><span class="chico apagado" style="flex:1 1 420px">Fijo: se reparte entre los alumnos (transporte, docentes, guía). Por alumno: cada uno paga el precio completo (entradas, hotel, seguro). PDF: los conceptos tildados se listan en «El viaje incluye».</span>';
-  if (!bloqueada()) h += '<div class="fila"><span id="sucio" class="chico" style="color:var(--aviso);font-weight:600" hidden>Hay cambios sin guardar</span><button class="btn btn-pri" data-accion="guardarPresupuesto">Guardar presupuesto</button></div>';
+  h += '<div class="tarjeta-cuerpo fila entre" style="border-top:1px solid var(--linea)"><span class="chico apagado" style="flex:1 1 420px">Fijo: se reparte entre los alumnos. Por alumno: cada uno paga el precio completo. En Precio podés escribir una cuenta (por ejemplo 4140000+96800*2). «Dividir» reparte un pago en seña y saldo o en cuotas.</span>';
+  if (!bloqueada()) h += '<div class="fila"><span id="sucio" class="chico" style="color:var(--aviso);font-weight:600"' + (S.sucio ? '' : ' hidden') + '>Hay cambios sin guardar</span><button class="btn btn-pri" data-accion="guardarPresupuesto">Guardar presupuesto</button></div>';
   h += '</div></section></div>';
   return h;
 }
 
+function textoPlan(partes) {
+  return partes.map(function (p) { return Calc.nombreMes(p.mes).slice(0, 3) + ' ' + (Math.round(p.pct * 10) / 10) + '%'; }).join(' · ');
+}
+
 function pintarItems() {
   var dis = bloqueada() ? ' disabled' : '';
-  var cfg = S.ini.config, n = Calc.alumnosCalculo(S.salida, cfg);
+  var cfg = S.ini.config, items = V().items, n = Calc.alumnosCalculo(SV(), cfg);
   var h = '';
-  if (!S.items.length) h = '<tr><td colspan="9" class="apagado">Todavía no hay costos. Agregá el primero con los botones de arriba.</td></tr>';
-  S.items.forEach(function (it, i) {
+  if (!items.length) h = '<tr><td colspan="9" class="apagado">Todavía no hay costos en esta variante. Agregalos con los botones de arriba o copialos de otro presupuesto.</td></tr>';
+  items.forEach(function (it, i) {
     var alumno = it.tipo === 'POR_ALUMNO';
+    var partes = Calc.partes(it);
+    var dividido = partes.length > 1 || (partes.length === 1 && partes[0].pct !== 100);
+    var celdaMes;
+    if (S.abierto === i) celdaMes = '<span class="chico" style="font-weight:600">Editando plan…</span>';
+    else if (dividido) celdaMes = '<div class="fila" style="gap:6px;flex-wrap:nowrap"><span class="chico plan-txt">' + esc(textoPlan(partes)) + '</span>' + (dis ? '' : '<button class="btn btn-icono" data-accion="abrirPlan" data-i="' + i + '">Editar</button>') + '</div>';
+    else celdaMes = '<div class="fila" style="gap:6px;flex-wrap:nowrap"><select class="w-mes" data-f="mes_pago" aria-label="Mes de pago"' + dis + '>' + opcionesMes(partes[0] ? partes[0].mes : '') + '</select>' +
+      (dis ? '' : '<button class="btn btn-icono" data-accion="abrirPlan" data-i="' + i + '" title="Seña y saldo, o en cuotas">Dividir</button>') + '</div>';
     h += '<tr data-i="' + i + '">' +
       '<td><input type="text" class="w-con" data-f="concepto" value="' + esc(it.concepto) + '" aria-label="Concepto"' + dis + '></td>' +
       '<td><input type="text" class="w-det" data-f="detalle" value="' + esc(it.detalle) + '" aria-label="Detalle"' + dis + '></td>' +
       '<td><select class="w-tipo" data-f="tipo" aria-label="Tipo"' + dis + '><option value="FIJO"' + (alumno ? '' : ' selected') + '>Fijo</option><option value="POR_ALUMNO"' + (alumno ? ' selected' : '') + '>Por alumno</option></select></td>' +
       '<td class="num">' + (alumno ? '<span class="apagado chico">× alumno</span>' : '<input type="number" class="w-cant" data-f="cantidad" min="0" value="' + esc(it.cantidad) + '" aria-label="Cantidad"' + dis + '>') + '</td>' +
-      '<td class="num"><input type="number" class="w-num" data-f="precio" min="0" step="any" value="' + esc(it.precio) + '" aria-label="Precio"' + dis + '></td>' +
+      '<td class="num"><input type="text" inputmode="decimal" class="w-num" data-f="precio" value="' + esc(it.precio) + '" aria-label="Precio"' + dis + '></td>' +
       '<td class="num" data-total="' + i + '">' + pesos(Calc.montoItem(it, n)) + '</td>' +
-      '<td><select class="w-mes" data-f="mes_pago" aria-label="Mes de pago"' + dis + '>' + opcionesMes(it.mes_pago) + '</select></td>' +
+      '<td>' + celdaMes + '</td>' +
       '<td><input type="checkbox" data-f="mostrar_pdf" aria-label="Mostrar en el PDF"' + (String(it.mostrar_pdf).toUpperCase() === 'NO' ? '' : ' checked') + dis + '></td>' +
       '<td>' + (dis ? '' : '<button class="btn btn-icono btn-peligro" data-accion="borrarItem" data-i="' + i + '" aria-label="Borrar costo">✕</button>') + '</td></tr>';
+    if (S.abierto === i) h += htmlPlan(it, i, n);
   });
   $('#filasItems').innerHTML = h;
 }
 
+function htmlPlan(it, i, n) {
+  var partes = it._partes;
+  var monto = Calc.montoItem(it, n), suma = Calc.sumaPct(partes);
+  var ok = Math.abs(suma - 100) < 0.01;
+  var h = '<tr class="plan"><td colspan="9"><div class="plan-caja col" style="gap:10px">' +
+    '<b>Plan de pago · ' + esc(it.concepto || 'costo') + ' (' + pesos(monto) + ')</b>';
+  partes.forEach(function (p, j) {
+    h += '<div class="fila" data-parte="' + j + '" style="gap:8px">' +
+      '<select data-pp="mes" aria-label="Mes del pago ' + (j + 1) + '" style="width:190px">' + opcionesMes(p.mes) + '</select>' +
+      '<input type="number" data-pp="pct" min="0" max="100" step="any" value="' + esc(p.pct) + '" aria-label="Porcentaje del pago ' + (j + 1) + '" style="width:100px"> %' +
+      '<span class="chico apagado" style="min-width:110px">' + pesos(monto * (Number(p.pct) || 0) / 100) + '</span>' +
+      '<button class="btn btn-icono btn-peligro" data-accion="borrarParte" data-j="' + j + '" aria-label="Quitar pago">✕</button></div>';
+  });
+  h += '<div class="fila" style="gap:8px"><button class="btn btn-icono" data-accion="addParte">+ Otro pago</button>' +
+    '<button class="btn btn-icono" data-accion="senaSaldo">Seña 20% + saldo</button>' +
+    '<span class="chico apagado">o repartir en</span><input type="number" id="repN" min="2" max="12" value="4" style="width:70px" aria-label="Cantidad de pagos iguales">' +
+    '<span class="chico apagado">pagos iguales desde</span><select id="repDesde" style="width:170px" aria-label="Mes del primer pago">' + opcionesMes(partes[0] && partes[0].mes || SV().mes_inicio_cobro) + '</select>' +
+    '<button class="btn btn-icono" data-accion="repartir">Repartir</button></div>' +
+    '<div class="fila"><button class="btn btn-pri btn-icono" data-accion="cerrarPlan">Listo</button><span class="chico" style="font-weight:600;color:' + (ok ? 'var(--ok)' : 'var(--error)') + '">Suma: ' + (Math.round(suma * 100) / 100) + '%' + (ok ? ' ✓' : ' — tiene que dar 100%') + '</span></div>';
+  h += '</div></td></tr>';
+  return h;
+}
+
+function syncPlan(it) {
+  it.pagos = Calc.textoPartes(it._partes);
+  var p = it._partes.filter(function (x) { return x.mes; })[0];
+  it.mes_pago = p ? p.mes : '';
+}
+
+function htmlTablaEscenarios(lista, cuotas) {
+  if (!lista || !lista.length) return '<div class="tarjeta-cuerpo apagado chico">Cargá el total de alumnos para ver los escenarios.</div>';
+  var cel = function (e, txt, neg) { return '<td class="num"' + (e.actual ? ' style="background:#FFF6CC;font-weight:700"' : '') + '>' + txt + '</td>'; };
+  return '<table class="escen"><thead><tr><th>Si viajan</th>' + lista.map(function (e) { return '<th class="num"' + (e.actual ? ' style="background:#FFF6CC;color:var(--tinta)"' : '') + '>' + e.n + ' alumnos</th>'; }).join('') + '</tr></thead><tbody>' +
+    '<tr><td>Valor por alumno</td>' + lista.map(function (e) { return cel(e, pesos(e.valor)); }).join('') + '</tr>' +
+    '<tr><td>Cuota (' + cuotas + ')</td>' + lista.map(function (e) { return cel(e, pesos(e.cuota)); }).join('') + '</tr></tbody></table>';
+}
+
 function actualizarResumen() {
-  var cfg = S.ini.config, pr = Calc.presupuesto(S.salida, S.items, cfg);
-  var n = pr.n;
-  S.items.forEach(function (it, i) { var c = document.querySelector('[data-total="' + i + '"]'); if (c) c.textContent = pesos(Calc.montoItem(it, n)); });
-  var r = $('#resumen'); if (!r) return;
-  r.innerHTML = '<div class="col" style="gap:4px">' +
-    '<span class="chico apagado">Calculado sobre <b>' + n + '</b> de ' + (S.salida.total_alumnos || 0) + ' alumnos</span>' +
-    '<span class="chico" style="font-weight:600;color:#4A3B00">Valor total por alumno</span><span class="grande">' + pesos(pr.valor) + '</span>' +
+  var cfg = S.ini.config, sv = SV(), items = V().items, pr = Calc.presupuesto(sv, items, cfg);
+  items.forEach(function (it, i) { var c = document.querySelector('[data-total="' + i + '"]'); if (c) c.textContent = pesos(Calc.montoItem(it, pr.n)); });
+  var r = $('#resumen');
+  if (r) r.innerHTML = '<div class="col" style="gap:4px">' +
+    '<span class="chico apagado">Calculado sobre <b>' + pr.n + '</b> de ' + (S.salida.total_alumnos || 0) + ' alumnos</span>' +
+    '<span class="chico" style="font-weight:600;color:#4A3B00">Valor total por alumno · variante ' + V().variante + '</span><span class="grande">' + pesos(pr.valor) + '</span>' +
     '<span>' + (pr.cuotas === 1 ? 'Un pago' : pr.cuotas + ' cuotas de <b>' + pesos(pr.cuota) + '</b>') +
     (pr.mesInicio ? ' · ' + Calc.nombreMes(pr.mesInicio) + (pr.cuotas > 1 ? ' a ' + Calc.nombreMes(pr.mesFin, true) : ' ' + pr.mesInicio.slice(0, 4)) : '') + '</span>' +
     '<span class="chico apagado" style="margin-top:8px">Fijos ' + pesos(pr.fijos) + ' · por alumno ' + pesos(pr.porAlumno) + ' · costo total ' + pesos(pr.costoTotal) + '</span></div>';
+  var e = $('#escenarios');
+  if (e) e.innerHTML = htmlTablaEscenarios(Calc.escenarios(sv, items, cfg), pr.cuotas);
+  var c = $('#comparacion');
+  if (c) c.innerHTML = htmlComparacion();
   var m = $('#sucio'); if (m) m.hidden = !S.sucio;
 }
 
+function htmlComparacion() {
+  if (S.variantes.length < 2) return '<p class="chico apagado" style="margin:0">¿Querés comparar otra empresa de transporte, otro destino u otra cantidad de cuotas? Creá una variante: se copia esta y la cambiás. Al nivel le llega solo la que marques «Se envía».</p>';
+  var cfg = S.ini.config;
+  var datos = S.variantes.map(function (v) {
+    var sv = SV(v), q = Calc.cuadro(sv, v.items, cfg);
+    return { v: v, pr: q.presupuesto, q: q };
+  });
+  var minValor = Math.min.apply(null, datos.map(function (d) { return d.pr.valor || Infinity; }));
+  var h = '<div class="tabla-caja"><table class="comparar"><thead><tr><th>Comparación</th>' + datos.map(function (d) {
+    return '<th class="num"><button class="linkbtn" data-accion="verVariante" data-v="' + d.v.variante + '">' + d.v.variante + ' · ' + esc(d.v.nombre) + '</button>' +
+      (d.v.variante === S.salida.variante_activa ? '<div class="var-tag" style="display:inline-block;margin-top:4px">Se envía</div>' : '') + '</th>';
+  }).join('') + '</tr></thead><tbody>';
+  function fila(t, f) { h += '<tr><td>' + t + '</td>' + datos.map(function (d) { return '<td class="num">' + f(d) + '</td>'; }).join('') + '</tr>'; }
+  fila('Valor por alumno', function (d) { return '<b' + (d.pr.valor === minValor ? ' style="color:var(--ok)"' : '') + '>' + pesos(d.pr.valor) + '</b>'; });
+  fila('Cuotas', function (d) { return d.pr.cuotas + ' × ' + pesos(d.pr.cuota); });
+  fila('Alumnos de cálculo', function (d) { return d.pr.n; });
+  fila('Costo total', function (d) { return pesos(d.pr.costoTotal); });
+  fila('Saldo más bajo', function (d) { return d.q.filas.length ? '<span style="color:' + (d.q.minimo < -0.5 ? 'var(--error)' : 'var(--ok)') + '">' + pesos(d.q.minimo) + '</span>' : '—'; });
+  return h + '</tbody></table></div>';
+}
+
 function nuevoItem(tipo, concepto, cantidad, precio, detalle) {
-  S.items.push({ concepto: concepto || '', detalle: detalle || '', tipo: tipo, cantidad: cantidad === undefined ? 1 : cantidad, precio: precio || '', mes_pago: '', mostrar_pdf: 'SI' });
-  S.sucio = true; pintarItems(); actualizarResumen();
+  V().items.push({ concepto: concepto || '', detalle: detalle || '', tipo: tipo, cantidad: cantidad === undefined ? 1 : cantidad, precio: precio || '', mes_pago: '', pagos: '', mostrar_pdf: 'SI' });
+  marcarSucio(); pintarItems(); actualizarResumen();
   var ult = document.querySelectorAll('#filasItems [data-f="concepto"]');
   if (ult.length && !concepto) ult[ult.length - 1].focus();
 }
 
+/* ---------- Copiar de… ---------- */
+function pintarCopiar() {
+  var c = $('#copiar'); if (!c) return;
+  if (!S.copiar) { c.innerHTML = ''; return; }
+  var h = '<div class="copiar tarjeta-cuerpo col" style="gap:12px;border-bottom:1px solid var(--borde);background:#FAFBFC">' +
+    '<div class="fila entre"><b>Copiar costos de otro presupuesto</b><button class="btn btn-icono" data-accion="copiarCerrar">Cerrar</button></div>' +
+    '<div class="fila"><input type="text" id="copiarTexto" placeholder="Buscar: Anisacate, Mendoza, Beggia, 6 grado…" value="' + esc(S.copiar.texto) + '" style="flex:1 1 300px" aria-label="Buscar presupuesto">' +
+    '<button class="btn btn-pri btn-icono" data-accion="copiarBuscar">Buscar</button></div>';
+  if (S.copiar.cargando) h += '<span class="apagado chico">Buscando…</span>';
+  else if (S.copiar.res) {
+    var grupos = S.copiar.res.actuales.map(function (g) { g._tipo = 'actual'; return g; }).concat(S.copiar.res.historial.map(function (g) { g._tipo = 'hist'; return g; }));
+    S.copiar.grupos = grupos;
+    if (!grupos.length) h += '<span class="apagado chico">No encontré presupuestos con esas palabras.</span>';
+    grupos.forEach(function (g, gi) {
+      h += '<details class="copiar-grupo"' + (gi === 0 ? ' open' : '') + '><summary><b>' + esc(g.origen) + '</b> <span class="apagado chico">· ' + esc(g.anio || 's/año') +
+        (g.total_alumnos ? ' · ' + esc(g.total_alumnos) + ' alumnos' : '') + ' · ' + g.items.length + ' costo(s)' + (g._tipo === 'actual' ? ' · salida de este año' : '') + '</span></summary>' +
+        '<table><tbody>' + g.items.map(function (it, ii) {
+          return '<tr><td style="width:36px"><input type="checkbox" checked data-copia="' + gi + ':' + ii + '" aria-label="Copiar ' + esc(it.concepto) + '"></td><td>' + esc(it.concepto) +
+            '</td><td class="apagado chico">' + (it.tipo === 'POR_ALUMNO' ? 'Por alumno' : 'Fijo × ' + esc(it.cantidad)) + '</td><td class="num">' + pesos(it.precio) + '</td></tr>';
+        }).join('') + '</tbody></table>' +
+        '<div class="fila" style="padding:8px 0"><button class="btn btn-icono" data-accion="copiarAgregar" data-g="' + gi + '">Agregar los tildados a la variante ' + V().variante + '</button>' +
+        (g._tipo === 'hist' && Number(g.anio) < Number(S.ini.config.anio) ? '<span class="chico" style="color:var(--aviso)">Precios de ' + esc(g.anio) + ': actualizalos.</span>' : '') + '</div></details>';
+    });
+  }
+  h += '</div>';
+  c.innerHTML = h;
+}
+
 /* ---------- Control interno ---------- */
 function htmlControl() {
-  var s = S.salida, dis = bloqueada() ? ' disabled' : '';
+  var dis = bloqueada() ? ' disabled' : '', v = V();
   var h = '<div class="col" style="gap:20px">';
   h += '<div class="banda interno"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#F5C400" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>' +
     '<div><b>Control interno de administración</b><small>No sale en el PDF para las familias y el nivel no lo ve.</small></div></div>';
+  if (S.variantes.length > 1) {
+    h += '<div class="variantes fila" role="group" aria-label="Variante a controlar"><span class="chico apagado" style="font-weight:600">Variante:</span>' + S.variantes.map(function (x) {
+      var sel = x.variante === S.ver;
+      return '<button class="var-btn' + (sel ? ' sel' : '') + '" data-accion="verVariante" data-v="' + x.variante + '" aria-pressed="' + sel + '"><b>' + x.variante + '</b> ' + esc(x.nombre) +
+        (x.variante === S.salida.variante_activa ? ' <span class="var-tag">Se envía</span>' : '') + '</button>';
+    }).join('') + '</div>';
+  }
   h += '<div id="controles" class="controles"></div>';
   h += '<section class="tarjeta"><div class="tarjeta-cab"><h2>Cobros y pagos mes a mes</h2><div class="fila">' +
-    '<label class="campo" style="flex-direction:row;align-items:center;gap:8px">Primer cobro<select data-param="mes_inicio_cobro" style="width:auto"' + dis + '>' + opcionesMes(s.mes_inicio_cobro) + '</select></label>' +
-    '<label class="campo" style="flex-direction:row;align-items:center;gap:8px">Cuotas<input type="number" data-param="cuotas" min="1" max="12" value="' + esc(s.cuotas || 1) + '" style="width:80px"' + dis + '></label>' +
+    '<label class="campo" style="flex-direction:row;align-items:center;gap:8px">Primer cobro<select data-param="mes_inicio_cobro" style="width:auto"' + dis + '>' + opcionesMes(v.mes_inicio_cobro) + '</select></label>' +
+    '<label class="campo" style="flex-direction:row;align-items:center;gap:8px">Cuotas<input type="number" data-param="cuotas" min="1" max="12" value="' + esc(v.cuotas || 1) + '" style="width:80px"' + dis + '></label>' +
     (dis ? '' : '<button class="btn btn-pri btn-icono" data-accion="guardarPresupuesto">Guardar</button>') + '</div></div>';
   h += '<div id="cuadro"></div></section></div>';
   return h;
 }
 
 function actualizarControl() {
-  var cfg = S.ini.config;
-  var ctr = Calc.controles(S.salida, S.items, cfg, S.ini.honorarios);
+  var cfg = S.ini.config, sv = SV(), items = V().items;
+  var ctr = Calc.controles(sv, items, cfg, S.ini.honorarios);
   var et = { ok: 'OK', aviso: 'Revisar', error: 'Falta' };
   $('#controles').innerHTML = ctr.map(function (c) {
     return '<div class="control ' + c.nivel + '"><span class="tag">' + et[c.nivel] + '</span><b>' + esc(c.titulo) + '</b><span class="chico" style="color:var(--texto2)">' + esc(c.detalle) + '</span></div>';
   }).join('');
-  var q = Calc.cuadro(S.salida, S.items, cfg);
+  var q = Calc.cuadro(sv, items, cfg);
   var h = '';
   if (!q.filas.length) h = '<div class="tarjeta-cuerpo apagado">Cargá costos con mes de pago y el mes del primer cobro para ver el cuadro.</div>';
   else {
     h += '<div style="padding:16px 20px 0"><div class="banda ' + (q.primerNegativo ? 'error' : 'ok') + '">' + (q.primerNegativo
       ? 'En <b>' + Calc.nombreMes(q.primerNegativo, true) + '</b> el saldo queda en negativo: hay pagos antes de juntar lo cobrado. Probá empezar a cobrar antes, sumar una cuota o mover un pago.'
       : 'Cobros y pagos calzan: el saldo nunca queda en negativo.') + '</div></div>';
-    if (q.sinMes.length) h += '<div style="padding:12px 20px 0"><div class="banda aviso">' + pesos(q.montoSinMes) + ' en costos sin mes de pago (' + q.sinMes.map(function (x) { return esc(x.concepto); }).join(', ') + ') no entran en el cuadro.</div></div>';
+    if (q.sinMes.length) h += '<div style="padding:12px 20px 0"><div class="banda aviso">' + pesos(q.montoSinMes) + ' sin mes de pago asignado (' + q.sinMes.map(function (x) { return esc(x.concepto); }).join(', ') + ') no entran en el cuadro.</div></div>';
     var max = Math.max.apply(null, q.filas.map(function (f) { return Math.abs(f.saldo); }).concat([1]));
     h += '<div class="tabla-caja"><table><thead><tr><th>Mes</th><th class="num">Cobros</th><th class="num">Pagos</th><th class="num">Saldo acumulado</th><th><span class="apagado" style="text-transform:none;letter-spacing:0">Saldo</span></th></tr></thead><tbody>';
     q.filas.forEach(function (f) {
@@ -377,6 +525,7 @@ function htmlNivel() {
       '<span class="chico" style="font-weight:600;color:#4A3B00">Valor total por alumno</span><span class="grande">' + pesos(r.valor) + '</span>' +
       '<span>' + (r.cuotas === 1 ? 'Un pago en ' + Calc.nombreMes(r.mesInicio, true) : r.cuotas + ' cuotas de <b>' + pesos(r.cuota) + '</b>, de ' + Calc.nombreMes(r.mesInicio) + ' a ' + Calc.nombreMes(r.mesFin, true)) + '</span></div>' +
       '</div></section>';
+    if (r.escenarios && r.escenarios.length) h += '<section class="tarjeta"><div class="tarjeta-cab"><h2>Valor por alumno según cuántos viajen</h2></div><div class="tabla-caja">' + htmlTablaEscenarios(r.escenarios, r.cuotas) + '</div></section>';
   }
   if (s.estado === 'ENVIADA') {
     h += '<section class="tarjeta tarjeta-cuerpo col" style="gap:14px"><h2>¿Está bien este presupuesto?</h2>' +
@@ -416,28 +565,68 @@ document.addEventListener('keydown', function (e) {
 });
 
 document.addEventListener('input', function (e) { cambio(e); });
-document.addEventListener('change', function (e) { if (e.target.matches('select, input[type=checkbox]')) cambio(e); });
+document.addEventListener('change', function (e) { if (e.target.matches('select, input[type=checkbox], [data-f=precio], [data-vnombre], [data-pp]')) cambio(e); });
 
 function cambio(e) {
   var el = e.target;
-  if (el.dataset.f !== undefined) {
-    var i = Number(el.closest('tr').dataset.i), it = S.items[i];
-    if (el.type === 'checkbox') it.mostrar_pdf = el.checked ? 'SI' : 'NO';
-    else it[el.dataset.f] = el.value;
-    S.sucio = true;
-    if (el.dataset.f === 'tipo' && e.type === 'change') { pintarItems(); }
+  if (el.dataset.pp !== undefined) {
+    var it = V().items[S.abierto], j = Number(el.closest('[data-parte]').dataset.parte);
+    it._partes[j][el.dataset.pp] = el.dataset.pp === 'pct' ? (el.value === '' ? '' : Number(el.value)) : el.value;
+    syncPlan(it); marcarSucio();
+    if (e.type === 'change') { pintarItems(); }
+    actualizarResumen();
+  } else if (el.dataset.f !== undefined) {
+    var i = Number(el.closest('tr').dataset.i), item = V().items[i];
+    if (el.type === 'checkbox') item.mostrar_pdf = el.checked ? 'SI' : 'NO';
+    else if (el.dataset.f === 'mes_pago') { item.mes_pago = el.value; item.pagos = ''; }
+    else if (el.dataset.f === 'precio') {
+      if (e.type === 'change' && /[+\-*\/x×()]/i.test(el.value.replace(/^-/, ''))) {
+        var v = Calc.evaluar(el.value);
+        if (v === null) { aviso('No entendí la cuenta del precio: «' + el.value + '».', 'error'); return; }
+        var cuenta = el.value.trim();
+        item.precio = v; el.value = v;
+        if ((item.detalle || '').indexOf(cuenta) === -1) item.detalle = (item.detalle ? item.detalle + ' · ' : '') + 'Precio: ' + cuenta;
+        pintarItems();
+      } else {
+        var n = Calc.evaluar(el.value);
+        item.precio = n === null ? el.value : n;
+      }
+    }
+    else item[el.dataset.f] = el.value;
+    marcarSucio();
+    if ((el.dataset.f === 'tipo' || el.dataset.f === 'mes_pago') && e.type === 'change') { pintarItems(); }
     actualizarResumen();
   } else if (el.dataset.param !== undefined) {
-    var v = el.value;
-    if (el.dataset.param === 'pct_estimados') v = v === '' ? '' : Number(v) / 100;
-    S.salida[el.dataset.param] = v;
-    S.sucio = true;
+    var val = el.value;
+    if (el.dataset.param === 'pct_estimados') val = val === '' ? '' : Number(val) / 100;
+    V()[el.dataset.param] = val;
+    marcarSucio();
     document.querySelectorAll('[data-param="' + el.dataset.param + '"]').forEach(function (o) { if (o !== el) o.value = el.value; });
     if (S.tab === 'presupuesto') { pintarItems(); actualizarResumen(); }
     if (S.tab === 'control') actualizarControl();
+  } else if (el.dataset.vnombre !== undefined) {
+    V().nombre = el.value; marcarSucio();
+    document.querySelectorAll('.var-btn.sel').forEach(function (b) { b.innerHTML = '<b>' + V().variante + '</b> ' + esc(el.value) + (V().variante === S.salida.variante_activa ? ' <span class="var-tag">Se envía</span>' : ''); });
+    var c = $('#comparacion'); if (c && e.type === 'change') c.innerHTML = htmlComparacion();
+  } else if (el.dataset.salida !== undefined) {
+    S.salida[el.dataset.salida] = el.checked ? 'SI' : 'NO'; marcarSucio();
   } else if (el.dataset.campo !== undefined && S.vista === 'ficha') {
     S.sucio = true;
   }
+}
+
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Enter' && e.target.id === 'copiarTexto') { e.preventDefault(); acciones.copiarBuscar(); }
+});
+
+function siguienteLetra() {
+  var usadas = S.variantes.map(function (v) { return v.variante; });
+  return ['A', 'B', 'C', 'D', 'E', 'F'].filter(function (l) { return usadas.indexOf(l) === -1; })[0];
+}
+
+function repintarPresupuesto() {
+  if (S.tab === 'presupuesto') { $('#panel').innerHTML = htmlPresupuesto(); pintarItems(); actualizarResumen(); pintarCopiar(); }
+  else if (S.tab === 'control') { $('#panel').innerHTML = htmlControl(); actualizarControl(); }
 }
 
 var acciones = {
@@ -465,27 +654,131 @@ var acciones = {
     nuevoItem('FIJO', 'Docentes acompañantes', doc || 1, hon || '', (doc || '?') + ' docentes · ' + d + (d === 1 ? ' día' : ' días'));
   },
   borrarItem: function (btn) {
-    S.items.splice(Number(btn.dataset.i), 1); S.sucio = true; pintarItems(); actualizarResumen();
+    V().items.splice(Number(btn.dataset.i), 1); S.abierto = null; marcarSucio(); pintarItems(); actualizarResumen();
+  },
+  /* Variantes */
+  verVariante: function (btn) { S.ver = btn.dataset.v; S.abierto = null; repintarPresupuesto(); },
+  nuevaVariante: function () {
+    var letra = siguienteLetra(); if (!letra) return;
+    var base = V();
+    var copia = JSON.parse(JSON.stringify(base));
+    copia.variante = letra; copia.nombre = 'Opción ' + letra;
+    copia.items.forEach(function (it) { delete it.id; delete it._partes; });
+    S.variantes.push(copia); S.ver = letra; S.abierto = null; marcarSucio(); repintarPresupuesto();
+    aviso('Variante ' + letra + ' creada como copia de la ' + base.variante + '. Cambiá lo que quieras comparar.');
+    var n = document.querySelector('[data-vnombre]'); if (n) { n.focus(); n.select(); }
+  },
+  borrarVariante: function () {
+    var v = V();
+    if (!confirm('¿Borrar la variante ' + v.variante + ' (' + v.nombre + ')?')) return;
+    S.variantes = S.variantes.filter(function (x) { return x !== v; });
+    if (S.salida.variante_activa === v.variante) S.salida.variante_activa = S.variantes[0].variante;
+    S.ver = S.salida.variante_activa; marcarSucio(); repintarPresupuesto();
+  },
+  usarVariante: function () { S.salida.variante_activa = V().variante; marcarSucio(); repintarPresupuesto(); aviso('Al nivel se le va a enviar la variante ' + V().variante + '. Guardá para confirmar.'); },
+  /* Plan de pago */
+  abrirPlan: function (btn) {
+    var i = Number(btn.dataset.i), it = V().items[i];
+    var p = Calc.partes(it);
+    it._partes = p.length ? p.map(function (x) { return { mes: x.mes, pct: x.pct }; }) : [{ mes: '', pct: 100 }];
+    S.abierto = i; pintarItems();
+  },
+  cerrarPlan: function () {
+    var it = V().items[S.abierto];
+    var suma = Calc.sumaPct(it._partes);
+    if (Math.abs(suma - 100) > 0.01 && !confirm('El plan suma ' + suma + '%, no 100%. La diferencia va a figurar como «sin mes de pago». ¿Cerrar igual?')) return;
+    var validas = it._partes.filter(function (p) { return p.mes; });
+    if (validas.length === 1 && Number(validas[0].pct) === 100) { it.mes_pago = validas[0].mes; it.pagos = ''; }
+    else syncPlan(it);
+    delete it._partes; S.abierto = null; pintarItems(); actualizarResumen();
+  },
+  addParte: function () {
+    var it = V().items[S.abierto], resto = Math.max(0, 100 - Calc.sumaPct(it._partes));
+    it._partes.push({ mes: '', pct: Math.round(resto * 100) / 100 }); syncPlan(it); marcarSucio(); pintarItems();
+  },
+  borrarParte: function (btn) {
+    var it = V().items[S.abierto]; it._partes.splice(Number(btn.dataset.j), 1);
+    if (!it._partes.length) it._partes.push({ mes: '', pct: 100 });
+    syncPlan(it); marcarSucio(); pintarItems(); actualizarResumen();
+  },
+  senaSaldo: function () {
+    var it = V().items[S.abierto];
+    var m1 = (it._partes[0] && it._partes[0].mes) || SV().mes_inicio_cobro || '';
+    var p = Calc.parseMes(m1), m2 = '';
+    if (p) { var t = p.y * 12 + p.m - 1 + 2; m2 = Math.floor(t / 12) + '-' + ('0' + (t % 12 + 1)).slice(-2); }
+    it._partes = [{ mes: m1, pct: 20 }, { mes: m2, pct: 80 }]; syncPlan(it); marcarSucio(); pintarItems(); actualizarResumen();
+  },
+  repartir: function () {
+    var it = V().items[S.abierto];
+    var n = Math.max(2, Math.min(12, Number($('#repN').value) || 2)), desde = Calc.parseMes($('#repDesde').value);
+    if (!desde) { aviso('Elegí el mes del primer pago.', 'error'); return; }
+    var base = Math.floor(10000 / n) / 100, partes = [];
+    for (var k = 0; k < n; k++) {
+      var t = desde.y * 12 + desde.m - 1 + k;
+      partes.push({ mes: Math.floor(t / 12) + '-' + ('0' + (t % 12 + 1)).slice(-2), pct: k === n - 1 ? Math.round((100 - base * (n - 1)) * 100) / 100 : base });
+    }
+    it._partes = partes; syncPlan(it); marcarSucio(); pintarItems(); actualizarResumen();
+  },
+  /* Copiar de… */
+  copiarAbrir: function () { S.copiar = { texto: S.salida.destino || S.salida.nombre || '', res: null }; pintarCopiar(); acciones.copiarBuscar(); },
+  copiarCerrar: function () { S.copiar = null; pintarCopiar(); },
+  copiarBuscar: function () {
+    if (!S.copiar) return;
+    var t = $('#copiarTexto'); if (t) S.copiar.texto = t.value;
+    S.copiar.cargando = true; pintarCopiar();
+    llamar('buscarPresupuestos', S.copiar.texto, S.salida.id).then(function (r) {
+      if (!S.copiar) return;
+      S.copiar.cargando = false; S.copiar.res = r; pintarCopiar();
+    }).catch(function (e) { if (S.copiar) { S.copiar.cargando = false; pintarCopiar(); } error(e); });
+  },
+  copiarAgregar: function (btn) {
+    var gi = Number(btn.dataset.g), g = S.copiar.grupos[gi], n = 0;
+    document.querySelectorAll('[data-copia^="' + gi + ':"]').forEach(function (cb) {
+      if (!cb.checked) return;
+      var it = g.items[Number(cb.dataset.copia.split(':')[1])];
+      V().items.push({
+        concepto: it.concepto, detalle: 'De «' + g.origen + '»' + (g._tipo === 'hist' ? ' (' + (g.anio || 's/año') + ')' : ''),
+        tipo: it.tipo === 'POR_ALUMNO' ? 'POR_ALUMNO' : 'FIJO', cantidad: it.cantidad || 1, precio: it.precio,
+        mes_pago: g._tipo === 'actual' ? (it.mes_pago || '') : '', pagos: g._tipo === 'actual' ? (it.pagos || '') : '', mostrar_pdf: it.mostrar_pdf || 'SI'
+      });
+      n++;
+    });
+    marcarSucio(); pintarItems(); actualizarResumen();
+    aviso(n + ' costo(s) agregados a la variante ' + V().variante + '. Revisá precios y meses de pago.');
   },
   guardarPresupuesto: function (btn) {
-    var s = S.salida;
-    var datos = { pct_estimados: s.pct_estimados, alumnos_calculo: s.alumnos_calculo, cuotas: s.cuotas, mes_inicio_cobro: s.mes_inicio_cobro };
-    var items = S.items.map(function (it) { return Object.assign({}, it, { precio: it.precio === '' ? 0 : Number(it.precio), cantidad: Number(it.cantidad) || 0 }); });
+    if (S.abierto !== null && S.abierto !== undefined) acciones.cerrarPlan();
+    if (S.abierto !== null && S.abierto !== undefined) return;
+    var datos = {
+      variante_activa: S.salida.variante_activa || S.variantes[0].variante,
+      pdf_escenarios: S.salida.pdf_escenarios === 'SI' ? 'SI' : 'NO',
+      variantes: S.variantes.map(function (v) {
+        return {
+          variante: v.variante, nombre: v.nombre, pct_estimados: v.pct_estimados, alumnos_calculo: v.alumnos_calculo, cuotas: v.cuotas, mes_inicio_cobro: v.mes_inicio_cobro,
+          items: v.items.map(function (it) {
+            var c = Object.assign({}, it); delete c._partes;
+            c.precio = Calc.evaluar(c.precio) || 0; c.cantidad = Number(c.cantidad) || 0;
+            return c;
+          })
+        };
+      })
+    };
     ocupado(btn, true);
-    llamar('guardarPresupuesto', s.id, datos, items).then(function (r) {
-      cargarFicha(r); aviso('Presupuesto guardado.');
+    llamar('guardarPresupuesto', S.salida.id, datos).then(function (r) {
+      var ver = S.ver; cargarFicha(r); S.ver = S.variantes.some(function (v) { return v.variante === ver; }) ? ver : S.salida.variante_activa; pintarFicha(); aviso('Presupuesto guardado.');
     }).catch(function (e) { ocupado(btn, false); error(e); });
   },
   pdf: function (btn) {
     if (S.sucio) { aviso('Guardá los cambios antes de generar el PDF.', 'error'); return; }
     ocupado(btn, true);
     llamar('generarPdf', S.salida.id).then(function (url) {
-      ocupado(btn, false); S.salida.pdf_url = url; window.open(url, '_blank'); aviso('PDF generado.'); pintarFicha();
+      ocupado(btn, false); S.salida.pdf_url = url; window.open(url, '_blank'); aviso('PDF generado con la variante ' + S.salida.variante_activa + '.'); pintarFicha();
     }).catch(function (e) { ocupado(btn, false); error(e); });
   },
   enviar: function (btn) {
     if (S.sucio) { aviso('Guardá los cambios antes de enviar.', 'error'); return; }
-    if (!confirm('Se genera el PDF y se avisa al nivel para que confirme. ¿Enviar?')) return;
+    var v = S.variantes.filter(function (x) { return x.variante === S.salida.variante_activa; })[0] || S.variantes[0];
+    if (!confirm('Se genera el PDF con la variante ' + v.variante + ' (' + v.nombre + ') y se avisa al nivel para que confirme. ¿Enviar?')) return;
     ocupado(btn, true);
     llamar('enviarAlNivel', S.salida.id).then(function (r) { cargarFicha(r); aviso('Enviado al nivel.'); })
       .catch(function (e) { ocupado(btn, false); error(e); });

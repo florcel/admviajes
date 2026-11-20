@@ -42,6 +42,23 @@ var Calc = (function () {
     return Math.max(1, Math.round(total * pct(s, cfg)));
   }
 
+  /** Plan de pago de un costo: [{mes:'2027-07', pct:20}, …]. Sin plan, usa mes_pago al 100%. */
+  function partes(it) {
+    var txt = String(it.pagos || '').trim();
+    if (txt) {
+      return txt.split(';').map(function (p) {
+        var m = /^\s*(\d{4}-\d{1,2})\s*:\s*([\d.,]+)\s*$/.exec(p);
+        return m ? { mes: m[1].replace(/-(\d)$/, '-0$1'), pct: num(m[2].replace(',', '.')) } : null;
+      }).filter(Boolean);
+    }
+    var p = parseMes(it.mes_pago);
+    return p ? [{ mes: desdeIdx(idx(p)), pct: 100 }] : [];
+  }
+  function textoPartes(lista) {
+    return (lista || []).filter(function (p) { return p.mes; }).map(function (p) { return p.mes + ':' + (Math.round(num(p.pct) * 100) / 100); }).join(';');
+  }
+  function sumaPct(lista) { return (lista || []).reduce(function (a, p) { return a + num(p.pct); }, 0); }
+
   function montoItem(it, n) {
     return it.tipo === 'POR_ALUMNO' ? num(it.precio) * n : num(it.cantidad) * num(it.precio);
   }
@@ -72,9 +89,13 @@ var Calc = (function () {
     (items || []).forEach(function (it) {
       var monto = montoItem(it, pr.n);
       if (!monto) return;
-      var p = parseMes(it.mes_pago);
-      if (!p) { sinMes.push({ concepto: it.concepto || '(sin nombre)', monto: monto }); return; }
-      pagos[idx(p)] = (pagos[idx(p)] || 0) + monto;
+      var lista = partes(it), asignado = 0;
+      lista.forEach(function (p) {
+        var q = parseMes(p.mes); if (!q) return;
+        var m = monto * num(p.pct) / 100;
+        pagos[idx(q)] = (pagos[idx(q)] || 0) + m; asignado += m;
+      });
+      if (Math.abs(monto - asignado) > 0.5) sinMes.push({ concepto: it.concepto || '(sin nombre)', monto: monto - asignado });
     });
     var claves = Object.keys(pagos).map(Number);
     if (ini) { claves.push(idx(ini)); claves.push(idx(ini) + pr.cuotas - 1); }
@@ -120,7 +141,7 @@ var Calc = (function () {
     if (a && b && b < a) add('error', 'Fechas', 'La fecha de regreso es anterior a la de salida.');
 
     if (!(items || []).length) add('error', 'Costos', 'Todavía no hay costos cargados.');
-    else if (c.sinMes.length) add('aviso', 'Costos con mes de pago', c.sinMes.length + ' costo(s) sin mes de pago: no entran en el cuadro de cobros y pagos.');
+    else if (c.sinMes.length) add('aviso', 'Costos con mes de pago', c.sinMes.length + ' costo(s) sin mes de pago o con un plan que no suma 100%: ' + c.sinMes.map(function (x) { return x.concepto; }).join(', ') + '.');
     else add('ok', 'Costos con mes de pago', 'Todos los costos tienen el mes en que se pagan.');
 
     var d = dias(s);
@@ -143,6 +164,31 @@ var Calc = (function () {
     return out;
   }
 
+  /** Costo por alumno según cuántos viajan (como las columnas de la planilla). */
+  function escenarios(s, items, cfg) {
+    var total = Math.round(num(s.total_alumnos));
+    if (!total) return [];
+    var actual = alumnosCalculo(s, cfg);
+    var ns = [total, Math.round(total * 0.95), Math.round(total * 0.9), Math.round(total * 0.85), Math.round(total * 0.8), Math.round(total * 0.75), actual]
+      .filter(function (x, i, a) { return x > 0 && a.indexOf(x) === i; })
+      .sort(function (a, b) { return b - a; });
+    return ns.map(function (n) {
+      var pr = presupuesto(Object.assign({}, s, { alumnos_calculo: n }), items, cfg);
+      return { n: n, valor: pr.valor, cuota: pr.cuota, cuotas: pr.cuotas, actual: n === actual };
+    });
+  }
+
+  /** Evalúa un precio escrito como cuenta («4140000+96800*2»). Devuelve null si no es válido. */
+  function evaluar(txt) {
+    var t = String(txt === null || txt === undefined ? '' : txt).replace(/\$/g, '').replace(/\s/g, '');
+    if (!t) return null;
+    if (/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(t)) t = t.replace(/\./g, '').replace(',', '.');
+    else t = t.replace(/,/g, '.');
+    if (!/^[\d.+\-*\/()x×]+$/i.test(t)) return null;
+    t = t.replace(/[x×]/gi, '*');
+    try { var v = Function('"use strict";return (' + t + ')')(); return isFinite(v) ? Math.round(v * 100) / 100 : null; } catch (e) { return null; }
+  }
+
   function pesos(v) {
     var n = Math.round(num(v));
     var s = Math.abs(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
@@ -152,7 +198,8 @@ var Calc = (function () {
   return {
     presupuesto: presupuesto, cuadro: cuadro, controles: controles, alumnosCalculo: alumnosCalculo,
     dias: dias, honorario: honorario, pesos: pesos, nombreMes: nombreMes, parseMes: parseMes,
-    montoItem: montoItem, MESES: MESES
+    montoItem: montoItem, MESES: MESES, partes: partes, textoPartes: textoPartes, sumaPct: sumaPct,
+    escenarios: escenarios, evaluar: evaluar
   };
 })();
 </script>

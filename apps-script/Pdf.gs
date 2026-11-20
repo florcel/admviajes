@@ -27,6 +27,9 @@ function crearPdf_(s, items, cfg) {
     cuota: C.pesos(pr.cuota),
     periodo: pr.cuotas === 1 ? 'Un pago en ' + C.nombreMes(pr.mesInicio, true)
       : pr.cuotas + ' cuotas mensuales de ' + C.pesos(pr.cuota) + ', de ' + C.nombreMes(pr.mesInicio) + ' a ' + C.nombreMes(pr.mesFin, true),
+    escenarios: String(s.pdf_escenarios).toUpperCase() === 'SI' ? C.escenarios(s, items, cfg).map(function (e) {
+      return { n: e.n, valor: C.pesos(e.valor), cuota: C.pesos(e.cuota), actual: e.actual };
+    }) : [],
     notas: ['nota_1', 'nota_2', 'nota_3', 'nota_4', 'nota_5', 'nota_6'].map(function (k) { return cfg[k]; }).filter(function (x) { return x && String(x).trim(); })
   };
   var html = t.evaluate().getContent();
