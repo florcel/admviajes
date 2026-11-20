@@ -1,0 +1,520 @@
+<script>
+/* ================== Estado y utilidades ================== */
+var S = {
+  ini: null, lista: [], filtroNivel: '', filtroEstado: '', buscar: '',
+  vista: 'lista', id: null, salida: null, items: [], resumen: null, tab: 'datos', sucio: false
+};
+
+function $(sel) { return document.querySelector(sel); }
+function esc(v) {
+  return String(v === null || v === undefined ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function fecha(s) { var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s || ''); return m ? m[3] + '/' + m[2] + '/' + m[1] : ''; }
+function fechaHora(s) { var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(s || ''); return m ? m[3] + '/' + m[2] + '/' + m[1] + ' ' + m[4] + ':' + m[5] : fecha(s); }
+function rangoFechas(a, b) { if (!a) return '—'; return (!b || a === b) ? fecha(a) : fecha(a) + ' al ' + fecha(b); }
+function pesos(v) { return Calc.pesos(v); }
+function esAdmin() { return S.ini && S.ini.usuario.rol === 'admin'; }
+function bloqueada() { return S.salida && ['ENVIADA', 'CONFIRMADA', 'SUSPENDIDA'].indexOf(S.salida.estado) > -1; }
+function chip(estado) { return '<span class="chip ' + esc(estado) + '">' + esc((S.ini.estados || {})[estado] || estado || '—') + '</span>'; }
+
+function llamar(fn) {
+  var args = Array.prototype.slice.call(arguments, 1);
+  return new Promise(function (ok, mal) {
+    var r = google.script.run.withSuccessHandler(ok).withFailureHandler(function (e) { mal(e); });
+    r[fn].apply(r, args);
+  });
+}
+
+var avisoTimer;
+function aviso(texto, tipo) {
+  var a = $('#aviso');
+  a.textContent = texto; a.className = 'aviso' + (tipo === 'error' ? ' error' : ''); a.hidden = false;
+  clearTimeout(avisoTimer);
+  avisoTimer = setTimeout(function () { a.hidden = true; }, tipo === 'error' ? 7000 : 3500);
+}
+function error(e) { aviso((e && e.message) ? e.message.replace(/^Exception: /, '').replace(/^Error: /, '') : String(e), 'error'); }
+
+function ocupado(btn, si) {
+  if (!btn) return;
+  if (si) { btn.dataset.texto = btn.textContent; btn.textContent = 'Un momento…'; btn.disabled = true; }
+  else { btn.textContent = btn.dataset.texto || btn.textContent; btn.disabled = false; }
+}
+
+function opcionesMes(valor) {
+  var anio = Number(S.ini.config.anio);
+  var out = '<option value="">—</option>';
+  for (var t = (anio - 1) * 12 + 6; t <= anio * 12 + 11; t++) {
+    var v = Math.floor(t / 12) + '-' + ('0' + (t % 12 + 1)).slice(-2);
+    out += '<option value="' + v + '"' + (v === valor ? ' selected' : '') + '>' + Calc.nombreMes(v, true) + '</option>';
+  }
+  if (valor && out.indexOf('value="' + valor + '"') === -1) out += '<option value="' + esc(valor) + '" selected>' + Calc.nombreMes(valor, true) + '</option>';
+  return out;
+}
+function opciones(lista, valor, vacio) {
+  return (vacio ? '<option value="">' + esc(vacio) + '</option>' : '') +
+    lista.map(function (x) { return '<option' + (x === valor ? ' selected' : '') + '>' + esc(x) + '</option>'; }).join('');
+}
+
+/* ================== Arranque ================== */
+function arrancar() {
+  llamar('iniciar').then(function (ini) {
+    S.ini = ini;
+    $('#anio').textContent = ini.config.anio;
+    $('#colegio').textContent = ini.config.nombre_colegio || '';
+    if (ini.logo) { $('#logo').src = ini.logo; $('#logo').hidden = false; }
+    $('#usuario').innerHTML = esc(ini.usuario.nombre) + '<br>' + (ini.usuario.rol === 'admin' ? 'Administración' : 'Nivel ' + esc(ini.usuario.nivel));
+    $('.marca').addEventListener('click', function () { irLista(); });
+    irLista();
+  }).catch(function (e) {
+    $('#app').innerHTML = '<div class="banda error"><b>No se pudo abrir la app.</b><br>' + esc((e && e.message) || e) + '</div>';
+  });
+}
+
+function salirSinGuardar() {
+  return !S.sucio || confirm('Hay cambios sin guardar. ¿Salir igual?');
+}
+
+/* ================== Lista ================== */
+function irLista() {
+  if (!salirSinGuardar()) return;
+  S.vista = 'lista'; S.sucio = false; S.salida = null;
+  $('#app').innerHTML = '<p class="cargando">Cargando salidas…</p>';
+  llamar('listarSalidas').then(function (l) { S.lista = l; pintarLista(); }).catch(error);
+}
+
+function pintarLista() {
+  var admin = esAdmin();
+  var estados = Object.keys(S.ini.estados);
+  var filas = S.lista.filter(function (s) {
+    if (S.filtroNivel && s.nivel !== S.filtroNivel) return false;
+    if (S.filtroEstado && s.estado !== S.filtroEstado) return false;
+    if (S.buscar && (s.id + ' ' + s.nombre + ' ' + s.destino + ' ' + s.curso).toLowerCase().indexOf(S.buscar.toLowerCase()) === -1) return false;
+    return true;
+  });
+  var pendientes = S.lista.filter(function (s) { return admin ? (s.estado === 'SOLICITADA' || s.estado === 'CAMBIOS') : s.estado === 'ENVIADA'; }).length;
+  var h = '';
+  h += '<div class="fila entre"><div class="col"><h1>Salidas ' + esc(S.ini.config.anio) + '</h1>' +
+    '<span class="apagado">' + (admin ? 'Todas las salidas del colegio' : 'Salidas de ' + esc(S.ini.usuario.nivel)) + '</span></div>' +
+    '<button class="btn btn-pri" data-accion="nueva">' + (admin ? '+ Nueva salida' : '+ Pedir salida nueva') + '</button></div>';
+  if (pendientes) {
+    h += '<div class="banda ' + (admin ? 'aviso' : 'info') + '">' + (admin
+      ? '<b>' + pendientes + '</b> salida(s) esperan a administración: pedidas por un nivel o con cambios pedidos.'
+      : '<b>' + pendientes + '</b> presupuesto(s) esperan tu confirmación.') + '</div>';
+  }
+  h += '<section class="tarjeta"><div class="tarjeta-cab"><h2>Salidas</h2><div class="fila">';
+  h += '<input type="text" id="buscar" placeholder="Buscar" aria-label="Buscar salida" value="' + esc(S.buscar) + '" style="width:200px">';
+  if (admin || S.ini.usuario.nivel === 'Todos') h += '<select id="fNivel" aria-label="Filtrar por nivel" style="width:auto">' + opciones(S.ini.niveles, S.filtroNivel, 'Todos los niveles') + '</select>';
+  h += '<select id="fEstado" aria-label="Filtrar por estado" style="width:auto"><option value="">Todos los estados</option>' +
+    estados.map(function (e) { return '<option value="' + e + '"' + (e === S.filtroEstado ? ' selected' : '') + '>' + esc(S.ini.estados[e]) + '</option>'; }).join('') + '</select>';
+  h += '</div></div>';
+  if (!filas.length) {
+    h += '<div class="tarjeta-cuerpo apagado">' + (S.lista.length ? 'No hay salidas con esos filtros.' : 'Todavía no hay salidas cargadas.') + '</div>';
+  } else {
+    h += '<div class="tabla-caja"><table><thead><tr><th>ID</th><th>Salida</th><th>Nivel</th><th>Fechas</th><th class="num">Alumnos</th><th class="num">Valor</th><th>Estado</th></tr></thead><tbody>';
+    filas.forEach(function (s) {
+      h += '<tr class="click" data-id="' + esc(s.id) + '" tabindex="0">' +
+        '<td class="apagado">' + esc(s.id) + '</td>' +
+        '<td><b><a href="#" data-id="' + esc(s.id) + '">' + esc(s.nombre) + '</a></b>' + (s.destino ? '<div class="chico apagado">' + esc(s.destino) + '</div>' : '') + '</td>' +
+        '<td>' + esc(s.nivel) + (s.curso ? '<div class="chico apagado">' + esc(s.curso) + '</div>' : '') + '</td>' +
+        '<td style="white-space:nowrap">' + rangoFechas(s.fecha_salida, s.fecha_regreso) + '</td>' +
+        '<td class="num">' + esc(s.total_alumnos || '—') + '</td>' +
+        '<td class="num">' + (s.valor ? pesos(s.valor) + '<div class="chico apagado">' + s.cuotas + ' × ' + pesos(s.cuota) + '</div>' : '—') + '</td>' +
+        '<td>' + chip(s.estado) + '</td></tr>';
+    });
+    h += '</tbody></table></div>';
+  }
+  h += '</section>';
+  $('#app').innerHTML = h;
+  $('#buscar').addEventListener('input', function (e) { S.buscar = e.target.value; var pos = e.target.selectionStart; pintarLista(); var b = $('#buscar'); b.focus(); b.setSelectionRange(pos, pos); });
+  if ($('#fNivel')) $('#fNivel').addEventListener('change', function (e) { S.filtroNivel = e.target.value; pintarLista(); });
+  $('#fEstado').addEventListener('change', function (e) { S.filtroEstado = e.target.value; pintarLista(); });
+}
+
+/* ================== Ficha ================== */
+function abrir(id, tab) {
+  if (!salirSinGuardar()) return;
+  S.vista = 'ficha'; S.id = id; S.sucio = false;
+  if (tab) S.tab = tab; else if (!esAdmin()) S.tab = 'nivel'; else if (S.tab === 'nivel') S.tab = 'datos';
+  $('#app').innerHTML = '<p class="cargando">Cargando…</p>';
+  llamar('obtenerSalida', id).then(cargarFicha).catch(function (e) { error(e); irLista(); });
+}
+
+function cargarFicha(r) {
+  S.salida = r.salida; S.items = (r.items || []).map(function (x) { return Object.assign({}, x); }); S.resumen = r.resumen || null; S.sucio = false;
+  if (!esAdmin()) S.tab = 'nivel';
+  pintarFicha();
+}
+
+function pintarFicha() {
+  var s = S.salida, admin = esAdmin();
+  var h = '<a href="#" data-accion="lista" class="chico" style="text-decoration:none;font-weight:600">← Todas las salidas</a>';
+  h += '<div class="fila entre" style="align-items:flex-start"><div class="col">' +
+    '<div class="fila"><span class="apagado" style="font-weight:600">' + esc(s.id) + '</span>' + chip(s.estado) + '</div>' +
+    '<h1>' + esc(s.nombre) + '</h1>' +
+    '<span class="texto2">' + [s.nivel, s.curso, rangoFechas(s.fecha_salida, s.fecha_regreso), s.total_alumnos ? s.total_alumnos + ' alumnos' : '', s.transporte].filter(Boolean).map(esc).join(' · ') + '</span></div>';
+  if (admin) {
+    h += '<div class="fila">';
+    if (s.pdf_url) h += '<a class="btn" href="' + esc(s.pdf_url) + '" target="_blank" rel="noopener">Ver último PDF</a>';
+    h += '<button class="btn" data-accion="pdf">Generar PDF</button>';
+    if (s.estado !== 'SUSPENDIDA') h += '<button class="btn btn-peligro" data-accion="suspender">Suspender</button>';
+    if (['BORRADOR', 'SOLICITADA', 'CAMBIOS'].indexOf(s.estado) > -1) h += '<button class="btn btn-pri" data-accion="enviar">Enviar al nivel</button>';
+    h += '</div>';
+  }
+  h += '</div>';
+
+  if (admin) {
+    if (s.estado === 'CAMBIOS' && s.comentario_nivel) h += '<div class="banda aviso"><b>El nivel pidió cambios:</b> ' + esc(s.comentario_nivel) + '</div>';
+    if (s.estado === 'SOLICITADA') h += '<div class="banda info"><b>Pedida por el nivel.</b> ' + (s.comentario_nivel ? 'Comentario: ' + esc(s.comentario_nivel) + '. ' : '') + 'Completá los datos y el presupuesto y enviala para que la confirmen.</div>';
+    if (bloqueada()) {
+      h += '<div class="banda ' + (s.estado === 'CONFIRMADA' ? 'ok' : s.estado === 'SUSPENDIDA' ? 'error' : 'info') + ' fila entre"><span>' +
+        (s.estado === 'ENVIADA' ? 'Presupuesto enviado al nivel: esperando respuesta.' :
+          s.estado === 'CONFIRMADA' ? '<b>Confirmada</b> por ' + esc(s.respondido_por) + ' el ' + fechaHora(s.respondido_fecha) + '.' :
+            'Salida suspendida.') +
+        ' Para cambiar algo hay que reabrirla.</span><button class="btn" data-accion="reabrir">Reabrir para editar</button></div>';
+    }
+    var tabs = [['datos', 'Datos'], ['presupuesto', 'Presupuesto'], ['control', 'Control interno'], ['historial', 'Historial']];
+    h += '<div class="tabs" role="tablist">' + tabs.map(function (t) {
+      return '<button class="tab" role="tab" data-tab="' + t[0] + '" aria-selected="' + (S.tab === t[0]) + '">' + t[1] + '</button>';
+    }).join('') + '</div><div id="panel"></div>';
+  } else {
+    h += '<div id="panel"></div>';
+  }
+  $('#app').innerHTML = h;
+  pintarPanel();
+}
+
+function pintarPanel() {
+  var p = $('#panel');
+  if (S.tab === 'datos') p.innerHTML = htmlDatos(S.salida, false);
+  else if (S.tab === 'presupuesto') { p.innerHTML = htmlPresupuesto(); pintarItems(); actualizarResumen(); }
+  else if (S.tab === 'control') { p.innerHTML = htmlControl(); actualizarControl(); }
+  else if (S.tab === 'historial') p.innerHTML = htmlHistorial();
+  else if (S.tab === 'nivel') p.innerHTML = htmlNivel();
+}
+
+/* ---------- Datos ---------- */
+function htmlDatos(s, nueva) {
+  var admin = esAdmin();
+  var dis = (!nueva && admin && bloqueada()) || (!admin && !nueva && s.estado !== 'SOLICITADA') ? ' disabled' : '';
+  function campo(id, etiqueta, tipo, valor, extra, ayuda) {
+    return '<label class="campo">' + etiqueta + (ayuda ? '<span class="ayuda">' + ayuda + '</span>' : '') +
+      '<input type="' + tipo + '" data-campo="' + id + '" value="' + esc(valor) + '"' + (extra || '') + dis + '></label>';
+  }
+  var h = '<section class="tarjeta"><div class="tarjeta-cuerpo"><form id="formDatos" class="grilla" onsubmit="return false">';
+  h += campo('nombre', 'Nombre de la salida', 'text', s.nombre, ' required');
+  h += campo('destino', 'Destino', 'text', s.destino);
+  if (admin) h += '<label class="campo">Nivel<select data-campo="nivel"' + dis + '>' + opciones(S.ini.niveles, s.nivel, 'Elegir') + '</select></label>';
+  h += campo('curso', admin ? 'Curso / sala' : 'Grado, año o sala', 'text', s.curso);
+  h += campo('fecha_salida', 'Fecha de salida', 'date', s.fecha_salida);
+  h += campo('fecha_regreso', 'Fecha de regreso', 'date', s.fecha_regreso);
+  h += '<label class="campo">Pernocte<select data-campo="pernocte"' + dis + '>' + opciones(['NO', 'SI'], s.pernocte || 'NO') + '</select></label>';
+  h += campo('total_alumnos', 'Total de alumnos', 'number', s.total_alumnos, ' min="0"');
+  h += campo('docentes', 'Docentes acompañantes', 'number', s.docentes, ' min="0"');
+  if (admin) {
+    h += campo('transporte', 'Empresa de transporte', 'text', s.transporte);
+    h += campo('responsable', 'Responsable (mail)', 'email', s.responsable, '', 'Recibe los avisos además del nivel');
+    h += '<label class="campo ancho">Notas internas<span class="ayuda">Solo las ve administración</span><textarea data-campo="notas_internas"' + dis + '>' + esc(s.notas_internas) + '</textarea></label>';
+  } else {
+    h += '<label class="campo ancho">Comentarios para administración<textarea data-campo="comentario_nivel"' + dis + '>' + esc(s.comentario_nivel) + '</textarea></label>';
+  }
+  h += '</form></div>';
+  if (!dis) {
+    h += '<div class="tarjeta-cab" style="border-top:1px solid var(--borde);border-bottom:0;justify-content:flex-end">' +
+      (nueva ? '<button class="btn" data-accion="lista">Cancelar</button>' : '') +
+      '<button class="btn btn-pri" data-accion="guardarDatos">' + (nueva ? (admin ? 'Crear salida' : 'Enviar a administración') : 'Guardar datos') + '</button></div>';
+  }
+  h += '</section>';
+  return h;
+}
+
+function leerFormDatos() {
+  var d = {};
+  document.querySelectorAll('#formDatos [data-campo]').forEach(function (el) { d[el.dataset.campo] = el.value; });
+  return d;
+}
+
+/* ---------- Presupuesto ---------- */
+function htmlPresupuesto() {
+  var s = S.salida, dis = bloqueada() ? ' disabled' : '';
+  var pct = s.pct_estimados === '' || s.pct_estimados === null || s.pct_estimados === undefined ? '' : Math.round(Number(s.pct_estimados) * 100);
+  var h = '<div class="col" style="gap:20px">';
+  h += '<section class="tarjeta"><div class="tarjeta-cuerpo dos-col" style="align-items:stretch">';
+  h += '<div class="principal col" style="gap:12px;flex-basis:420px"><h2>Valor para las familias</h2><div class="grilla" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">' +
+    '<label class="campo">% que viaja<span class="ayuda">Vacío = ' + Math.round(S.ini.config.pct_estimados * 100) + '%</span><input type="number" data-param="pct_estimados" min="1" max="100" value="' + esc(pct) + '"' + dis + '></label>' +
+    '<label class="campo">Alumnos fijos<span class="ayuda">Reemplaza al %</span><input type="number" data-param="alumnos_calculo" min="0" value="' + esc(s.alumnos_calculo) + '"' + dis + '></label>' +
+    '<label class="campo">Cuotas<span class="ayuda">Cantidad</span><input type="number" data-param="cuotas" min="1" max="12" value="' + esc(s.cuotas || 1) + '"' + dis + '></label>' +
+    '<label class="campo">Primer cobro<span class="ayuda">Mes de la 1ª cuota</span><select data-param="mes_inicio_cobro"' + dis + '>' + opcionesMes(s.mes_inicio_cobro) + '</select></label></div></div>';
+  h += '<div class="lateral" id="resumen" style="background:#FFF6CC;border:1px solid #EED77A;border-radius:10px;padding:16px 18px;flex-basis:280px"></div>';
+  h += '</div></section>';
+  h += '<section class="tarjeta">';
+  h += '<div class="tarjeta-cab"><h2>Costos</h2><div class="fila">' +
+    '<button class="btn btn-icono" data-accion="addFijo"' + dis + '>+ Costo fijo</button>' +
+    '<button class="btn btn-icono" data-accion="addAlumno"' + dis + '>+ Costo por alumno</button>' +
+    '<button class="btn btn-icono" data-accion="addHonorarios"' + dis + '>+ Honorarios docentes</button></div></div>';
+  h += '<div class="tabla-caja"><table class="items"><thead><tr><th>Concepto</th><th>Detalle</th><th>Tipo</th><th class="num">Cant.</th><th class="num">Precio</th><th class="num">Total</th><th>Se paga en</th><th title="Aparece en el PDF para las familias">PDF</th><th></th></tr></thead><tbody id="filasItems"></tbody></table></div>';
+  h += '<div class="tarjeta-cuerpo fila entre" style="border-top:1px solid var(--linea)"><span class="chico apagado" style="flex:1 1 420px">Fijo: se reparte entre los alumnos (transporte, docentes, guía). Por alumno: cada uno paga el precio completo (entradas, hotel, seguro). PDF: los conceptos tildados se listan en «El viaje incluye».</span>';
+  if (!bloqueada()) h += '<div class="fila"><span id="sucio" class="chico" style="color:var(--aviso);font-weight:600" hidden>Hay cambios sin guardar</span><button class="btn btn-pri" data-accion="guardarPresupuesto">Guardar presupuesto</button></div>';
+  h += '</div></section></div>';
+  return h;
+}
+
+function pintarItems() {
+  var dis = bloqueada() ? ' disabled' : '';
+  var cfg = S.ini.config, n = Calc.alumnosCalculo(S.salida, cfg);
+  var h = '';
+  if (!S.items.length) h = '<tr><td colspan="9" class="apagado">Todavía no hay costos. Agregá el primero con los botones de arriba.</td></tr>';
+  S.items.forEach(function (it, i) {
+    var alumno = it.tipo === 'POR_ALUMNO';
+    h += '<tr data-i="' + i + '">' +
+      '<td><input type="text" class="w-con" data-f="concepto" value="' + esc(it.concepto) + '" aria-label="Concepto"' + dis + '></td>' +
+      '<td><input type="text" class="w-det" data-f="detalle" value="' + esc(it.detalle) + '" aria-label="Detalle"' + dis + '></td>' +
+      '<td><select class="w-tipo" data-f="tipo" aria-label="Tipo"' + dis + '><option value="FIJO"' + (alumno ? '' : ' selected') + '>Fijo</option><option value="POR_ALUMNO"' + (alumno ? ' selected' : '') + '>Por alumno</option></select></td>' +
+      '<td class="num">' + (alumno ? '<span class="apagado chico">× alumno</span>' : '<input type="number" class="w-cant" data-f="cantidad" min="0" value="' + esc(it.cantidad) + '" aria-label="Cantidad"' + dis + '>') + '</td>' +
+      '<td class="num"><input type="number" class="w-num" data-f="precio" min="0" step="any" value="' + esc(it.precio) + '" aria-label="Precio"' + dis + '></td>' +
+      '<td class="num" data-total="' + i + '">' + pesos(Calc.montoItem(it, n)) + '</td>' +
+      '<td><select class="w-mes" data-f="mes_pago" aria-label="Mes de pago"' + dis + '>' + opcionesMes(it.mes_pago) + '</select></td>' +
+      '<td><input type="checkbox" data-f="mostrar_pdf" aria-label="Mostrar en el PDF"' + (String(it.mostrar_pdf).toUpperCase() === 'NO' ? '' : ' checked') + dis + '></td>' +
+      '<td>' + (dis ? '' : '<button class="btn btn-icono btn-peligro" data-accion="borrarItem" data-i="' + i + '" aria-label="Borrar costo">✕</button>') + '</td></tr>';
+  });
+  $('#filasItems').innerHTML = h;
+}
+
+function actualizarResumen() {
+  var cfg = S.ini.config, pr = Calc.presupuesto(S.salida, S.items, cfg);
+  var n = pr.n;
+  S.items.forEach(function (it, i) { var c = document.querySelector('[data-total="' + i + '"]'); if (c) c.textContent = pesos(Calc.montoItem(it, n)); });
+  var r = $('#resumen'); if (!r) return;
+  r.innerHTML = '<div class="col" style="gap:4px">' +
+    '<span class="chico apagado">Calculado sobre <b>' + n + '</b> de ' + (S.salida.total_alumnos || 0) + ' alumnos</span>' +
+    '<span class="chico" style="font-weight:600;color:#4A3B00">Valor total por alumno</span><span class="grande">' + pesos(pr.valor) + '</span>' +
+    '<span>' + (pr.cuotas === 1 ? 'Un pago' : pr.cuotas + ' cuotas de <b>' + pesos(pr.cuota) + '</b>') +
+    (pr.mesInicio ? ' · ' + Calc.nombreMes(pr.mesInicio) + (pr.cuotas > 1 ? ' a ' + Calc.nombreMes(pr.mesFin, true) : ' ' + pr.mesInicio.slice(0, 4)) : '') + '</span>' +
+    '<span class="chico apagado" style="margin-top:8px">Fijos ' + pesos(pr.fijos) + ' · por alumno ' + pesos(pr.porAlumno) + ' · costo total ' + pesos(pr.costoTotal) + '</span></div>';
+  var m = $('#sucio'); if (m) m.hidden = !S.sucio;
+}
+
+function nuevoItem(tipo, concepto, cantidad, precio, detalle) {
+  S.items.push({ concepto: concepto || '', detalle: detalle || '', tipo: tipo, cantidad: cantidad === undefined ? 1 : cantidad, precio: precio || '', mes_pago: '', mostrar_pdf: 'SI' });
+  S.sucio = true; pintarItems(); actualizarResumen();
+  var ult = document.querySelectorAll('#filasItems [data-f="concepto"]');
+  if (ult.length && !concepto) ult[ult.length - 1].focus();
+}
+
+/* ---------- Control interno ---------- */
+function htmlControl() {
+  var s = S.salida, dis = bloqueada() ? ' disabled' : '';
+  var h = '<div class="col" style="gap:20px">';
+  h += '<div class="banda interno"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#F5C400" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>' +
+    '<div><b>Control interno de administración</b><small>No sale en el PDF para las familias y el nivel no lo ve.</small></div></div>';
+  h += '<div id="controles" class="controles"></div>';
+  h += '<section class="tarjeta"><div class="tarjeta-cab"><h2>Cobros y pagos mes a mes</h2><div class="fila">' +
+    '<label class="campo" style="flex-direction:row;align-items:center;gap:8px">Primer cobro<select data-param="mes_inicio_cobro" style="width:auto"' + dis + '>' + opcionesMes(s.mes_inicio_cobro) + '</select></label>' +
+    '<label class="campo" style="flex-direction:row;align-items:center;gap:8px">Cuotas<input type="number" data-param="cuotas" min="1" max="12" value="' + esc(s.cuotas || 1) + '" style="width:80px"' + dis + '></label>' +
+    (dis ? '' : '<button class="btn btn-pri btn-icono" data-accion="guardarPresupuesto">Guardar</button>') + '</div></div>';
+  h += '<div id="cuadro"></div></section></div>';
+  return h;
+}
+
+function actualizarControl() {
+  var cfg = S.ini.config;
+  var ctr = Calc.controles(S.salida, S.items, cfg, S.ini.honorarios);
+  var et = { ok: 'OK', aviso: 'Revisar', error: 'Falta' };
+  $('#controles').innerHTML = ctr.map(function (c) {
+    return '<div class="control ' + c.nivel + '"><span class="tag">' + et[c.nivel] + '</span><b>' + esc(c.titulo) + '</b><span class="chico" style="color:var(--texto2)">' + esc(c.detalle) + '</span></div>';
+  }).join('');
+  var q = Calc.cuadro(S.salida, S.items, cfg);
+  var h = '';
+  if (!q.filas.length) h = '<div class="tarjeta-cuerpo apagado">Cargá costos con mes de pago y el mes del primer cobro para ver el cuadro.</div>';
+  else {
+    h += '<div style="padding:16px 20px 0"><div class="banda ' + (q.primerNegativo ? 'error' : 'ok') + '">' + (q.primerNegativo
+      ? 'En <b>' + Calc.nombreMes(q.primerNegativo, true) + '</b> el saldo queda en negativo: hay pagos antes de juntar lo cobrado. Probá empezar a cobrar antes, sumar una cuota o mover un pago.'
+      : 'Cobros y pagos calzan: el saldo nunca queda en negativo.') + '</div></div>';
+    if (q.sinMes.length) h += '<div style="padding:12px 20px 0"><div class="banda aviso">' + pesos(q.montoSinMes) + ' en costos sin mes de pago (' + q.sinMes.map(function (x) { return esc(x.concepto); }).join(', ') + ') no entran en el cuadro.</div></div>';
+    var max = Math.max.apply(null, q.filas.map(function (f) { return Math.abs(f.saldo); }).concat([1]));
+    h += '<div class="tabla-caja"><table><thead><tr><th>Mes</th><th class="num">Cobros</th><th class="num">Pagos</th><th class="num">Saldo acumulado</th><th><span class="apagado" style="text-transform:none;letter-spacing:0">Saldo</span></th></tr></thead><tbody>';
+    q.filas.forEach(function (f) {
+      var neg = f.saldo < -0.5;
+      h += '<tr><td><b>' + Calc.nombreMes(f.mes, true) + '</b></td><td class="num">' + (f.cobros ? pesos(f.cobros) : '—') + '</td><td class="num">' + (f.pagos ? pesos(f.pagos) : '—') + '</td>' +
+        '<td class="num"><b style="color:' + (neg ? 'var(--error)' : 'var(--tinta)') + '">' + pesos(f.saldo) + '</b></td>' +
+        '<td style="width:28%"><div class="barra-saldo"><div style="width:' + Math.max(2, Math.round(Math.abs(f.saldo) / max * 100)) + '%;background:' + (neg ? '#C53030' : '#2F7D57') + '"></div></div></td></tr>';
+    });
+    h += '<tr><td><b>Total</b></td><td class="num"><b>' + pesos(q.totalCobros) + '</b></td><td class="num"><b>' + pesos(q.totalPagos + q.montoSinMes) + '</b></td><td class="num"><b>' + pesos(q.saldoFinal) + '</b></td><td></td></tr>';
+    h += '</tbody></table></div>';
+  }
+  $('#cuadro').innerHTML = h;
+}
+
+/* ---------- Historial ---------- */
+function htmlHistorial() {
+  var l = S.salida.historial || [];
+  var h = '<section class="tarjeta tarjeta-cuerpo col">';
+  if (S.salida.comentario_nivel) h += '<div class="banda info"><b>Último comentario del nivel:</b> ' + esc(S.salida.comentario_nivel) + '</div>';
+  h += '<h2>Historial</h2>';
+  h += l.length ? '<ul class="historial">' + l.map(function (x) {
+    return '<li><b>' + esc(x.accion) + '</b> · ' + esc(x.usuario) + ' · <span class="apagado">' + fechaHora(x.fecha) + '</span>' + (x.detalle ? '<div class="chico apagado">' + esc(x.detalle) + '</div>' : '') + '</li>';
+  }).join('') + '</ul>' : '<p class="apagado">Sin movimientos.</p>';
+  h += '<p class="chico apagado">Creada por ' + esc(S.salida.creado_por) + ' el ' + fechaHora(S.salida.creado_fecha) + '.</p></section>';
+  return h;
+}
+
+/* ---------- Vista del nivel ---------- */
+function htmlNivel() {
+  var s = S.salida, r = S.resumen, h = '';
+  if (s.estado === 'SOLICITADA') {
+    return '<div class="banda info">Administración todavía no armó el presupuesto. Mientras tanto podés corregir los datos.</div>' + htmlDatos(s, false);
+  }
+  if (s.estado === 'BORRADOR') h += '<div class="banda info">Administración está armando el presupuesto. Te va a llegar un aviso para confirmarlo.</div>';
+  if (s.estado === 'SUSPENDIDA') h += '<div class="banda error">Esta salida está suspendida.</div>';
+  if (s.estado === 'CAMBIOS') h += '<div class="banda aviso">Pediste cambios: «' + esc(s.comentario_nivel) + '». Administración lo está revisando.</div>';
+  if (s.estado === 'CONFIRMADA') h += '<div class="banda ok">Confirmaste este presupuesto el ' + fechaHora(s.respondido_fecha) + '.</div>';
+  if (r) {
+    h += '<section class="tarjeta"><div class="tarjeta-cuerpo dos-col">' +
+      '<div class="principal col" style="gap:10px"><h2>El viaje incluye</h2><ul style="margin:0;padding-left:20px;line-height:1.7">' +
+      r.incluye.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>' +
+      (s.pdf_url ? '<a href="' + esc(s.pdf_url) + '" target="_blank" rel="noopener" style="font-weight:600">Ver el PDF que reciben las familias</a>' : '') + '</div>' +
+      '<div class="lateral col" style="background:#FFF6CC;border:1px solid #EED77A;border-radius:10px;padding:18px;gap:6px">' +
+      '<span class="chico" style="font-weight:600;color:#4A3B00">Valor total por alumno</span><span class="grande">' + pesos(r.valor) + '</span>' +
+      '<span>' + (r.cuotas === 1 ? 'Un pago en ' + Calc.nombreMes(r.mesInicio, true) : r.cuotas + ' cuotas de <b>' + pesos(r.cuota) + '</b>, de ' + Calc.nombreMes(r.mesInicio) + ' a ' + Calc.nombreMes(r.mesFin, true)) + '</span></div>' +
+      '</div></section>';
+  }
+  if (s.estado === 'ENVIADA') {
+    h += '<section class="tarjeta tarjeta-cuerpo col" style="gap:14px"><h2>¿Está bien este presupuesto?</h2>' +
+      '<label class="campo">Comentario<span class="ayuda">Obligatorio si pedís cambios</span><textarea id="comentario"></textarea></label>' +
+      '<div class="fila"><button class="btn btn-ok" data-accion="confirmar">Confirmar presupuesto</button><button class="btn" data-accion="cambios">Pedir cambios</button></div></section>';
+  }
+  return h;
+}
+
+/* ---------- Nueva salida ---------- */
+function irNueva() {
+  if (!salirSinGuardar()) return;
+  S.vista = 'nueva'; S.salida = { estado: '' }; S.sucio = false;
+  $('#app').innerHTML = '<a href="#" data-accion="lista" class="chico" style="text-decoration:none;font-weight:600">← Todas las salidas</a>' +
+    '<h1>' + (esAdmin() ? 'Nueva salida' : 'Pedir una salida nueva') + '</h1>' +
+    (esAdmin() ? '' : '<p class="apagado" style="margin:0">Administración arma el presupuesto y te lo manda para confirmar.</p>') +
+    htmlDatos({ pernocte: 'NO', nivel: '' }, true);
+}
+
+/* ================== Eventos ================== */
+document.addEventListener('click', function (e) {
+  var t = e.target.closest('[data-accion],[data-tab],tr.click,a[data-id]');
+  if (!t) return;
+  if (t.matches('a[data-id], tr.click')) { e.preventDefault(); abrir(t.dataset.id); return; }
+  if (t.dataset.tab) {
+    S.tab = t.dataset.tab;
+    document.querySelectorAll('.tab').forEach(function (b) { b.setAttribute('aria-selected', b.dataset.tab === S.tab); });
+    pintarPanel(); return;
+  }
+  var a = t.dataset.accion;
+  if (t.tagName === 'A') e.preventDefault();
+  if (acciones[a]) acciones[a](t);
+});
+
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Enter' && e.target.matches('tr.click')) abrir(e.target.dataset.id);
+});
+
+document.addEventListener('input', function (e) { cambio(e); });
+document.addEventListener('change', function (e) { if (e.target.matches('select, input[type=checkbox]')) cambio(e); });
+
+function cambio(e) {
+  var el = e.target;
+  if (el.dataset.f !== undefined) {
+    var i = Number(el.closest('tr').dataset.i), it = S.items[i];
+    if (el.type === 'checkbox') it.mostrar_pdf = el.checked ? 'SI' : 'NO';
+    else it[el.dataset.f] = el.value;
+    S.sucio = true;
+    if (el.dataset.f === 'tipo' && e.type === 'change') { pintarItems(); }
+    actualizarResumen();
+  } else if (el.dataset.param !== undefined) {
+    var v = el.value;
+    if (el.dataset.param === 'pct_estimados') v = v === '' ? '' : Number(v) / 100;
+    S.salida[el.dataset.param] = v;
+    S.sucio = true;
+    document.querySelectorAll('[data-param="' + el.dataset.param + '"]').forEach(function (o) { if (o !== el) o.value = el.value; });
+    if (S.tab === 'presupuesto') { pintarItems(); actualizarResumen(); }
+    if (S.tab === 'control') actualizarControl();
+  } else if (el.dataset.campo !== undefined && S.vista === 'ficha') {
+    S.sucio = true;
+  }
+}
+
+var acciones = {
+  lista: function () { irLista(); },
+  nueva: function () { irNueva(); },
+  guardarDatos: function (btn) {
+    var d = leerFormDatos();
+    if (!d.nombre) { aviso('Poné un nombre para la salida.', 'error'); return; }
+    if (d.fecha_salida && d.fecha_regreso && d.fecha_regreso < d.fecha_salida) { aviso('La fecha de regreso es anterior a la de salida.', 'error'); return; }
+    if (S.vista === 'ficha') d.id = S.salida.id;
+    ocupado(btn, true);
+    llamar('guardarSalida', d).then(function (id) {
+      S.sucio = false;
+      aviso(S.vista === 'nueva' ? (esAdmin() ? 'Salida creada: ' + id : 'Listo: administración recibió tu pedido (' + id + ').') : 'Datos guardados.');
+      abrir(id, esAdmin() ? (S.vista === 'nueva' ? 'presupuesto' : 'datos') : 'nivel');
+    }).catch(function (e) { ocupado(btn, false); error(e); });
+  },
+  addFijo: function () { nuevoItem('FIJO'); },
+  addAlumno: function () { nuevoItem('POR_ALUMNO'); },
+  addHonorarios: function () {
+    var d = Calc.dias(S.salida), doc = Number(S.salida.docentes) || 0;
+    if (!d) { aviso('Cargá las fechas de la salida para calcular los días.', 'error'); return; }
+    var hon = Calc.honorario(S.ini.honorarios, d);
+    if (!hon) aviso('No hay honorario cargado para ' + d + ' día(s) en la hoja HONORARIOS: completá el precio a mano.', 'error');
+    nuevoItem('FIJO', 'Docentes acompañantes', doc || 1, hon || '', (doc || '?') + ' docentes · ' + d + (d === 1 ? ' día' : ' días'));
+  },
+  borrarItem: function (btn) {
+    S.items.splice(Number(btn.dataset.i), 1); S.sucio = true; pintarItems(); actualizarResumen();
+  },
+  guardarPresupuesto: function (btn) {
+    var s = S.salida;
+    var datos = { pct_estimados: s.pct_estimados, alumnos_calculo: s.alumnos_calculo, cuotas: s.cuotas, mes_inicio_cobro: s.mes_inicio_cobro };
+    var items = S.items.map(function (it) { return Object.assign({}, it, { precio: it.precio === '' ? 0 : Number(it.precio), cantidad: Number(it.cantidad) || 0 }); });
+    ocupado(btn, true);
+    llamar('guardarPresupuesto', s.id, datos, items).then(function (r) {
+      cargarFicha(r); aviso('Presupuesto guardado.');
+    }).catch(function (e) { ocupado(btn, false); error(e); });
+  },
+  pdf: function (btn) {
+    if (S.sucio) { aviso('Guardá los cambios antes de generar el PDF.', 'error'); return; }
+    ocupado(btn, true);
+    llamar('generarPdf', S.salida.id).then(function (url) {
+      ocupado(btn, false); S.salida.pdf_url = url; window.open(url, '_blank'); aviso('PDF generado.'); pintarFicha();
+    }).catch(function (e) { ocupado(btn, false); error(e); });
+  },
+  enviar: function (btn) {
+    if (S.sucio) { aviso('Guardá los cambios antes de enviar.', 'error'); return; }
+    if (!confirm('Se genera el PDF y se avisa al nivel para que confirme. ¿Enviar?')) return;
+    ocupado(btn, true);
+    llamar('enviarAlNivel', S.salida.id).then(function (r) { cargarFicha(r); aviso('Enviado al nivel.'); })
+      .catch(function (e) { ocupado(btn, false); error(e); });
+  },
+  reabrir: function (btn) {
+    var msg = S.salida.estado === 'CONFIRMADA' ? 'El nivel ya confirmó este presupuesto. Si lo cambiás, vas a tener que enviarlo de nuevo. ¿Reabrir?' : '¿Reabrir la salida para editarla?';
+    if (!confirm(msg)) return;
+    ocupado(btn, true);
+    llamar('reabrir', S.salida.id, '').then(function (r) { cargarFicha(r); aviso('Salida reabierta.'); }).catch(function (e) { ocupado(btn, false); error(e); });
+  },
+  suspender: function (btn) {
+    var motivo = prompt('¿Por qué se suspende la salida? (queda en el historial)');
+    if (motivo === null) return;
+    ocupado(btn, true);
+    llamar('suspender', S.salida.id, motivo).then(function (r) { cargarFicha(r); aviso('Salida suspendida.'); }).catch(function (e) { ocupado(btn, false); error(e); });
+  },
+  confirmar: function (btn) { responderNivel(btn, 'CONFIRMADA'); },
+  cambios: function (btn) { responderNivel(btn, 'CAMBIOS'); }
+};
+
+function responderNivel(btn, decision) {
+  var c = ($('#comentario') || {}).value || '';
+  if (decision === 'CAMBIOS' && !c.trim()) { aviso('Contá qué cambios necesitás.', 'error'); $('#comentario').focus(); return; }
+  ocupado(btn, true);
+  llamar('responder', S.salida.id, decision, c).then(function (r) {
+    cargarFicha(r); aviso(decision === 'CONFIRMADA' ? 'Presupuesto confirmado. Gracias.' : 'Pedido de cambios enviado a administración.');
+  }).catch(function (e) { ocupado(btn, false); error(e); });
+}
+
+window.addEventListener('beforeunload', function (e) { if (S.sucio) { e.preventDefault(); e.returnValue = ''; } });
+arrancar();
+</script>

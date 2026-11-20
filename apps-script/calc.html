@@ -1,0 +1,158 @@
+<script>
+/**
+ * Cálculos del presupuesto. Lo usan el navegador (para recalcular en vivo)
+ * y el servidor (para el PDF y los controles), así hay una sola fórmula.
+ */
+var Calc = (function () {
+  var MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+
+  function num(v) { var n = Number(v); return isFinite(n) ? n : 0; }
+  function ceilTo(v, paso) { paso = num(paso) || 1; return Math.ceil(v / paso - 1e-9) * paso; }
+
+  function parseMes(s) {
+    var m = /^(\d{4})-(\d{1,2})/.exec(String(s || ''));
+    return m ? { y: +m[1], m: +m[2] } : null;
+  }
+  function idx(p) { return p.y * 12 + p.m - 1; }
+  function desdeIdx(t) { return Math.floor(t / 12) + '-' + ('0' + (t % 12 + 1)).slice(-2); }
+  function nombreMes(s, conAnio) {
+    var p = parseMes(s); if (!p) return '';
+    var t = MESES[p.m - 1];
+    return conAnio ? t + ' ' + p.y : t;
+  }
+  function parseFecha(s) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || ''));
+    return m ? new Date(+m[1], +m[2] - 1, +m[3], 12) : null;
+  }
+  function dias(s) {
+    var a = parseFecha(s.fecha_salida), b = parseFecha(s.fecha_regreso);
+    if (!a || !b) return 0;
+    return Math.round((b - a) / 86400000) + 1;
+  }
+
+  function pct(s, cfg) {
+    var p = s.pct_estimados;
+    return (p === '' || p === null || p === undefined) ? num(cfg.pct_estimados) || 0.9 : num(p);
+  }
+
+  function alumnosCalculo(s, cfg) {
+    if (num(s.alumnos_calculo) > 0) return Math.round(num(s.alumnos_calculo));
+    var total = num(s.total_alumnos);
+    if (!total) return 0;
+    return Math.max(1, Math.round(total * pct(s, cfg)));
+  }
+
+  function montoItem(it, n) {
+    return it.tipo === 'POR_ALUMNO' ? num(it.precio) * n : num(it.cantidad) * num(it.precio);
+  }
+
+  function presupuesto(s, items, cfg) {
+    var n = alumnosCalculo(s, cfg);
+    var fijos = 0, porAlumno = 0;
+    (items || []).forEach(function (it) {
+      if (it.tipo === 'POR_ALUMNO') porAlumno += num(it.precio);
+      else fijos += num(it.cantidad) * num(it.precio);
+    });
+    var k = Math.max(1, Math.round(num(s.cuotas)) || 1);
+    var costoAlumno = n ? fijos / n + porAlumno : 0;
+    var valor = n ? ceilTo(costoAlumno, cfg.redondeo) : 0;
+    var cuota = valor ? ceilTo(valor / k, cfg.redondeo) : 0;
+    var ini = parseMes(s.mes_inicio_cobro);
+    return {
+      n: n, pct: pct(s, cfg), fijos: fijos, porAlumno: porAlumno, costoTotal: fijos + porAlumno * n,
+      valor: valor, cuotas: k, cuota: cuota,
+      mesInicio: ini ? desdeIdx(idx(ini)) : '', mesFin: ini ? desdeIdx(idx(ini) + k - 1) : ''
+    };
+  }
+
+  function cuadro(s, items, cfg) {
+    var pr = presupuesto(s, items, cfg);
+    var ini = parseMes(s.mes_inicio_cobro);
+    var pagos = {}, sinMes = [];
+    (items || []).forEach(function (it) {
+      var monto = montoItem(it, pr.n);
+      if (!monto) return;
+      var p = parseMes(it.mes_pago);
+      if (!p) { sinMes.push({ concepto: it.concepto || '(sin nombre)', monto: monto }); return; }
+      pagos[idx(p)] = (pagos[idx(p)] || 0) + monto;
+    });
+    var claves = Object.keys(pagos).map(Number);
+    if (ini) { claves.push(idx(ini)); claves.push(idx(ini) + pr.cuotas - 1); }
+    var filas = [], acum = 0, minimo = 0, primerNeg = null, totC = 0, totP = 0;
+    if (claves.length) {
+      var desde = Math.min.apply(null, claves), hasta = Math.max.apply(null, claves);
+      for (var t = desde; t <= hasta; t++) {
+        var cob = (ini && t >= idx(ini) && t < idx(ini) + pr.cuotas) ? pr.cuota * pr.n : 0;
+        var pag = pagos[t] || 0;
+        acum += cob - pag; totC += cob; totP += pag;
+        if (acum < -0.5 && primerNeg === null) primerNeg = t;
+        minimo = Math.min(minimo, acum);
+        filas.push({ mes: desdeIdx(t), cobros: cob, pagos: pag, saldo: acum });
+      }
+    }
+    var montoSinMes = sinMes.reduce(function (a, b) { return a + b.monto; }, 0);
+    return {
+      presupuesto: pr, filas: filas, sinMes: sinMes, montoSinMes: montoSinMes,
+      primerNegativo: primerNeg === null ? '' : desdeIdx(primerNeg), minimo: minimo,
+      totalCobros: totC, totalPagos: totP, saldoFinal: totC - totP - montoSinMes
+    };
+  }
+
+  function honorario(honorarios, d) {
+    var fila = (honorarios || []).filter(function (h) { return num(h.dias) === d; })[0];
+    return fila && num(fila.honorario_por_docente) ? num(fila.honorario_por_docente) : 0;
+  }
+
+  /** Controles del presupuesto. nivel: 'error' (no deja enviar), 'aviso' o 'ok'. */
+  function controles(s, items, cfg, honorarios) {
+    var c = cuadro(s, items, cfg), pr = c.presupuesto, out = [];
+    function add(nivel, titulo, detalle) { out.push({ nivel: nivel, titulo: titulo, detalle: detalle }); }
+    var faltan = [];
+    if (!s.nombre) faltan.push('nombre');
+    if (!s.nivel) faltan.push('nivel');
+    if (!s.fecha_salida || !s.fecha_regreso) faltan.push('fechas');
+    if (!num(s.total_alumnos)) faltan.push('total de alumnos');
+    if (!parseMes(s.mes_inicio_cobro)) faltan.push('mes de inicio de cobro');
+    if (faltan.length) add('error', 'Datos de la salida', 'Falta completar: ' + faltan.join(', ') + '.');
+    else add('ok', 'Datos de la salida', 'Están todos los datos necesarios.');
+
+    var a = parseFecha(s.fecha_salida), b = parseFecha(s.fecha_regreso);
+    if (a && b && b < a) add('error', 'Fechas', 'La fecha de regreso es anterior a la de salida.');
+
+    if (!(items || []).length) add('error', 'Costos', 'Todavía no hay costos cargados.');
+    else if (c.sinMes.length) add('aviso', 'Costos con mes de pago', c.sinMes.length + ' costo(s) sin mes de pago: no entran en el cuadro de cobros y pagos.');
+    else add('ok', 'Costos con mes de pago', 'Todos los costos tienen el mes en que se pagan.');
+
+    var d = dias(s);
+    if (num(s.docentes) > 0) {
+      var hayHon = (items || []).some(function (it) { return /docente/i.test(it.concepto || ''); });
+      if (!hayHon) add('aviso', 'Honorarios docentes', 'Viajan ' + num(s.docentes) + ' docentes y no hay un costo de honorarios.');
+      if (d && !honorario(honorarios, d)) add('aviso', 'Tabla de honorarios', 'No hay honorario cargado para ' + d + ' día(s) en la hoja HONORARIOS.');
+    }
+
+    if (c.filas.length) {
+      if (c.primerNegativo) add('aviso', 'Saldo mes a mes', 'En ' + nombreMes(c.primerNegativo, true) + ' el saldo queda en negativo (mínimo ' + pesos(c.minimo) + ').');
+      else add('ok', 'Saldo mes a mes', 'Ningún mes queda en negativo.');
+    }
+
+    if (b && pr.mesFin) {
+      var fin = parseMes(pr.mesFin);
+      if (idx(fin) > b.getFullYear() * 12 + b.getMonth()) add('aviso', 'Cuotas', 'La última cuota (' + nombreMes(pr.mesFin, true) + ') es posterior al viaje.');
+      else add('ok', 'Cuotas', pr.cuotas + ' cuota(s) de ' + pesos(pr.cuota) + ', de ' + nombreMes(pr.mesInicio) + ' a ' + nombreMes(pr.mesFin, true) + '.');
+    }
+    return out;
+  }
+
+  function pesos(v) {
+    var n = Math.round(num(v));
+    var s = Math.abs(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    return (n < 0 ? '−$' : '$') + s;
+  }
+
+  return {
+    presupuesto: presupuesto, cuadro: cuadro, controles: controles, alumnosCalculo: alumnosCalculo,
+    dias: dias, honorario: honorario, pesos: pesos, nombreMes: nombreMes, parseMes: parseMes,
+    montoItem: montoItem, MESES: MESES
+  };
+})();
+</script>

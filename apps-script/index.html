@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+  <?!= include('estilos'); ?>
+</head>
+<body>
+  <header class="barra">
+    <div class="barra-in">
+      <div class="marca">
+        <img id="logo" alt="" hidden>
+        <div>
+          <div class="marca-titulo">Viajes y Salidas <span id="anio"></span></div>
+          <div class="marca-sub" id="colegio"></div>
+        </div>
+      </div>
+      <div class="usuario" id="usuario"></div>
+    </div>
+  </header>
+  <main id="app" class="contenedor">
+    <p class="cargando">Cargando…</p>
+  </main>
+  <div id="aviso" class="aviso" role="status" aria-live="polite" hidden></div>
+  <?!= include('calc'); ?>
+  <?!= include('app'); ?>
+</body>
+</html>
